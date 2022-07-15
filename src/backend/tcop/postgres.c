@@ -5044,8 +5044,19 @@ PostgresMain(int argc, char *argv[],
 		/* read control file (error checking and contains config ) */
 		LocalProcessControlFile(false);
 
+		/*
+		 * process any libraries that should be preloaded at postmaster start
+		 */
+		process_shared_preload_libraries();
+
 		/* Initialize MaxBackends (if under postmaster, was done already) */
 		InitializeMaxBackends();
+
+		/*
+		 * Now that modules have been loaded, we can process any custom resource
+		 * managers specified in the wal_consistency_checking GUC.
+		 */
+		InitializeWalConsistencyChecking();
 	}
 
 	/* Early initialization */
