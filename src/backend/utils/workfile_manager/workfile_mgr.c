@@ -134,7 +134,24 @@ struct workfile_set
 
 	/* Used to track workfile_set created in current process */
 	dlist_node	local_node;
-};
+
+	/* Average work file size */
+	uint64		avg_file_size;
+
+	/*
+	 * GP_ABI_BUMP_FIXME
+	 *
+	 * Not used, just for ABI compatibility, remove this when we decide to bump
+	 * the ABI version.
+	 */
+	uint64		abi_reserved;
+
+	/* Total memory usage by compression buffer */
+	uint64		compression_buf_total;
+
+	/* Number of compressed work files */
+	uint32		num_files_compressed;
+} workfile_set;
 
 /*
  * Protected by WorkFileManagerLock (except for sizes, which use atomics)
@@ -456,6 +473,12 @@ UpdateWorkFileSize(File file, uint64 newsize)
 	perquery->total_bytes += diff;
 	workfile_shared->total_bytes += diff;
 
+	if (newsize > work_set->max_file_size)
+		work_set->max_file_size = newsize;
+	if (work_set->min_file_size == 0 ||
+		newsize < work_set->min_file_size)
+		work_set->min_file_size = newsize;
+
 	/* also update the local entry */
 	localEntry->size = newsize;
 
@@ -673,6 +696,10 @@ workfile_mgr_create_set_internal(const char *operator_name, const char *prefix)
 	work_set->total_bytes = 0;
 	work_set->active = true;
 	work_set->pinned = false;
+	work_set->max_file_size = 0;
+	work_set->min_file_size = 0;
+	work_set->compression_buf_total = 0;
+	work_set->num_files_compressed = 0;
 
 	/* Track all workfile_sets created in current process */
 	if (!localCtl.initialized)
