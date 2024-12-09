@@ -532,6 +532,10 @@ typedef struct ViewOptions
  * can't distinguish the PAX and renamed heap(heap_psql) in test `psql`.
  */
 #define PAX_AM_OID 7047
+
+#define RelationIsPax(relation) \
+	((relation)->rd_rel->relam == PAX_AM_OID)
+
 /*
  * CAUTION: this macro is a violation of the absraction that table AM and
  * index AM interfaces provide.  Use of this macro is discouraged.  If
@@ -548,7 +552,7 @@ typedef struct ViewOptions
  */
 #define RelationIsNonblockRelation(relation) \
 	(RelationIsAppendOptimized(relation) || \
-	 (relation)->rd_rel->relam == PAX_AM_OID)
+	 RelationIsPax(relation))
 
 /*
  * RelationIsBitmapIndex

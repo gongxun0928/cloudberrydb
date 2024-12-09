@@ -50,14 +50,17 @@ file_extend_hook_type file_extend_hook = NULL;
 file_truncate_hook_type file_truncate_hook = NULL;
 file_unlink_hook_type file_unlink_hook = NULL;
 
+smgr_get_impl_hook_type smgr_get_impl_hook = NULL;
+
 /* Hook for plugins to get control in smgr */
 smgr_init_hook_type smgr_init_hook = NULL;
 smgr_hook_type smgr_hook = NULL;
 smgr_shutdown_hook_type smgr_shutdown_hook = NULL;
-
-static const f_smgr smgrsw[] = {
+#define SMGR_MAX_ID UINT8_MAX
+static f_smgr smgrsw[SMGR_MAX_ID + 1] = {
 	/* magnetic disk */
 	{
+		.smgr_name = "heap",
 		.smgr_init = mdinit,
 		.smgr_shutdown = NULL,
 		.smgr_open = mdopen,
@@ -82,6 +85,7 @@ static const f_smgr smgrsw[] = {
 	 * Append-optimized relation files currently fall in this category.
 	 */
 	{
+		.smgr_name = "ao",
 		.smgr_init = mdinit,
 		.smgr_shutdown = NULL,
 		.smgr_open = mdopen,
@@ -115,8 +119,6 @@ static const f_smgr_ao smgrswao[] = {
 };
 
 
-static const int NSmgr = lengthof(smgrsw);
-
 /*
  * Each backend has a hashtable that stores all extant SMgrRelation objects.
  * In addition, "unowned" SMgrRelation objects are chained together in a list.
@@ -128,6 +130,79 @@ static dlist_head unowned_relns;
 /* local function prototypes */
 static void smgrshutdown(int code, Datum arg);
 
+void smgr_register(const f_smgr *smgr, SMgrImpl smgr_impl)
+{
+	if (!process_shared_preload_libraries_in_progress)
+	{
+		ereport(ERROR, (errmsg("smgr_register not in shared_preload_libraries")));
+	}
+	
+	if (smgr_impl > SMGR_MAX_ID)
+	{
+		elog(ERROR, "smgr_impl is out of range");
+	}
+
+	if (smgr->smgr_name == NULL)
+	{
+		elog(ERROR, "smgr_name is not set");
+	}
+
+	// check if the smgr_impl is already registered, avoid conflict with existing smgr_impl
+	if (smgrsw[smgr_impl].smgr_name != NULL)
+	{
+		elog(ERROR, "smgr_impl is already registered");
+	}
+
+	smgrsw[smgr_impl] = *smgr;
+}
+
+const f_smgr *smgr_get(SMgrImpl smgr_impl)
+{
+	if (smgr_impl > SMGR_MAX_ID)
+	{
+		elog(ERROR, "smgr_impl is out of range");
+	}
+
+	if (smgrsw[smgr_impl].smgr_name == NULL)
+	{
+		elog(ERROR, "smgr_impl is not registered");
+	}
+
+	return &smgrsw[smgr_impl];
+}
+
+/*
+ * smgr_get_impl() is used to get the smgr id of the relation.
+ *
+ * FIXME: For PAX_AM_OID, Cloudberrydb reserves this value for ORCA, a
+ * predefined value is used here to reserve the smgr id for PAX_AM_OID.
+ * should we add a hook to get the smgr id of the relation?
+ */
+SMgrImpl smgr_get_impl(const Relation rel)
+{
+	SMgrImpl smgr_impl = SMGR_MD;
+
+	if (RelationIsAppendOptimized(rel))
+	{
+		smgr_impl = SMGR_AO;
+	}
+	else if (RelationIsPax(rel))
+	{
+		smgr_impl = SMGR_PAX;
+	}
+	else
+	{
+		if (smgr_get_impl_hook)
+		{
+			(*smgr_get_impl_hook)(rel, &smgr_impl);
+			Assert(smgr_impl >= SMGR_MD && smgr_impl <= SMGR_MAX_ID);
+			Assert(smgrsw[smgr_impl].smgr_name != NULL);
+		}
+	}
+
+
+	return smgr_impl;
+}
 
 /*
  *	smgrinit(), smgrshutdown() -- Initialize or shut down storage
@@ -142,7 +217,7 @@ smgrinit(void)
 {
 	int			i;
 
-	for (i = 0; i < NSmgr; i++)
+	for (i = 0; i <= SMGR_MAX_ID; i++)
 	{
 		if (smgrsw[i].smgr_init)
 			smgrsw[i].smgr_init();
@@ -163,7 +238,7 @@ smgrshutdown(int code, Datum arg)
 {
 	int			i;
 
-	for (i = 0; i < NSmgr; i++)
+	for (i = 0; i <= SMGR_MAX_ID; i++)
 	{
 		if (smgrsw[i].smgr_shutdown)
 			smgrsw[i].smgr_shutdown();
@@ -776,4 +851,11 @@ AtEOXact_SMgr(void)
 
 		smgrclose(rel);
 	}
+}
+
+const char *smgr_get_name(SMgrImpl impl)
+{
+	if (impl > SMGR_MAX_ID)
+		return "invalid";
+	return smgrsw[impl].smgr_name ? smgrsw[impl].smgr_name : "unknown";
 }

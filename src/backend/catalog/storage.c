@@ -213,8 +213,7 @@ RelationDropStorage(Relation rel)
 	pending->relnode.isTempRelation = rel->rd_backend == TempRelBackendId;
 	pending->atCommit = true;	/* delete if commit */
 	pending->nestLevel = GetCurrentTransactionNestLevel();
-	pending->relnode.smgr_which =
-		RelationIsAppendOptimized(rel) ? SMGR_AO : SMGR_MD;
+	pending->relnode.smgr_which = smgr_get_impl(rel);
 	pending->action = &storage_pending_rel_deletes_action;
 	RegisterPendingDelete(pending);
 
