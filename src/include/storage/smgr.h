@@ -29,6 +29,7 @@ typedef enum SMgrImplementation
 	SMGR_INVALID = -1,
 	SMGR_MD = 0,
 	SMGR_AO = 1,
+	SMGR_PAX = 2,
 } SMgrImpl;
 
 struct f_smgr;
@@ -105,6 +106,7 @@ typedef SMgrRelationData *SMgrRelation;
  */
 typedef struct f_smgr
 {
+	const char 	*smgr_name;
 	void		(*smgr_init) (void);	/* may be NULL */
 	void		(*smgr_shutdown) (void);	/* may be NULL */
 	void		(*smgr_open) (SMgrRelation reln);
@@ -148,8 +150,16 @@ typedef void (*smgr_shutdown_hook_type) (void);
 extern PGDLLIMPORT smgr_init_hook_type smgr_init_hook;
 extern PGDLLIMPORT smgr_hook_type smgr_hook;
 extern PGDLLIMPORT smgr_shutdown_hook_type smgr_shutdown_hook;
-
 extern bool smgr_is_heap_relation(SMgrRelation reln);
+
+// must be registered in the shared_preload_libraries phase.
+// return the SMgrImpl value, in extension we should check the return value is equal to the smgr_impl,
+// otherwise it's an error.
+extern SMgrImpl smgr_register(const f_smgr *smgr, SMgrImpl smgr_impl);
+
+extern const f_smgr *smgr_get(SMgrImpl smgr_impl);
+
+extern SMgrImpl smgr_get_impl(const Relation rel);
 
 extern void smgrinit(void);
 extern SMgrRelation smgropen(RelFileNode rnode, BackendId backend,

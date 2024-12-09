@@ -16550,7 +16550,7 @@ index_copy_data(Relation rel, RelFileNode newrnode)
 {
 	SMgrRelation dstrel;
 
-	SMgrImpl smgr_which = RelationIsAppendOptimized(rel) ? SMGR_AO : SMGR_MD;
+	SMgrImpl smgr_which = smgr_get_impl(rel);
 
 	dstrel = smgropen(newrnode, rel->rd_backend, smgr_which, rel);
 					  

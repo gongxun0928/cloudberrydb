@@ -54,10 +54,11 @@ file_unlink_hook_type file_unlink_hook = NULL;
 smgr_init_hook_type smgr_init_hook = NULL;
 smgr_hook_type smgr_hook = NULL;
 smgr_shutdown_hook_type smgr_shutdown_hook = NULL;
-
-static const f_smgr smgrsw[] = {
+#define SMGR_MAX_ID UINT8_MAX
+static f_smgr smgrsw[SMGR_MAX_ID + 1] = {
 	/* magnetic disk */
 	{
+		.smgr_name = "heap",
 		.smgr_init = mdinit,
 		.smgr_shutdown = NULL,
 		.smgr_open = mdopen,
@@ -82,6 +83,7 @@ static const f_smgr smgrsw[] = {
 	 * Append-optimized relation files currently fall in this category.
 	 */
 	{
+		.smgr_name = "ao",
 		.smgr_init = mdinit,
 		.smgr_shutdown = NULL,
 		.smgr_open = mdopen,
@@ -115,8 +117,6 @@ static const f_smgr_ao smgrswao[] = {
 };
 
 
-static const int NSmgr = lengthof(smgrsw);
-
 /*
  * Each backend has a hashtable that stores all extant SMgrRelation objects.
  * In addition, "unowned" SMgrRelation objects are chained together in a list.
@@ -128,6 +128,62 @@ static dlist_head unowned_relns;
 /* local function prototypes */
 static void smgrshutdown(int code, Datum arg);
 
+SMgrImpl smgr_register(const f_smgr *smgr, SMgrImpl smgr_impl)
+{
+	if (smgr_impl > SMGR_MAX_ID)
+	{
+		elog(ERROR, "smgr_impl is out of range");
+	}
+
+	if (smgr->smgr_name == NULL)
+	{
+		elog(ERROR, "smgr_name is not set");
+	}
+
+	// check if the smgr_impl is already registered, avoid conflict with existing smgr_impl
+	if (smgrsw[smgr_impl].smgr_name != NULL)
+	{
+		elog(ERROR, "smgr_impl is already registered");
+	}
+
+	smgrsw[smgr_impl] = *smgr;
+	return smgr_impl;
+}
+
+const f_smgr *smgr_get(SMgrImpl smgr_impl)
+{
+	if (smgr_impl > SMGR_MAX_ID)
+	{
+		elog(ERROR, "smgr_impl is out of range");
+	}
+
+	if (smgrsw[smgr_impl].smgr_name == NULL)
+	{
+		elog(ERROR, "smgr_impl is not registered");
+	}
+
+	return &smgrsw[smgr_impl];
+}
+
+SMgrImpl smgr_get_impl(const Relation rel)
+{
+	SMgrImpl smgr_impl = SMGR_INVALID;
+
+	if (RelationIsAppendOptimized(rel))
+	{
+		smgr_impl = SMGR_AO;
+	}
+	else if (rel->rd_rel->relam == PAX_AM_OID)
+	{
+		smgr_impl = SMGR_PAX;
+	}
+	else
+	{
+		smgr_impl = SMGR_MD;
+	}
+
+	return smgr_impl;
+}
 
 /*
  *	smgrinit(), smgrshutdown() -- Initialize or shut down storage
@@ -142,7 +198,7 @@ smgrinit(void)
 {
 	int			i;
 
-	for (i = 0; i < NSmgr; i++)
+	for (i = 0; i <= SMGR_MAX_ID; i++)
 	{
 		if (smgrsw[i].smgr_init)
 			smgrsw[i].smgr_init();
@@ -163,7 +219,7 @@ smgrshutdown(int code, Datum arg)
 {
 	int			i;
 
-	for (i = 0; i < NSmgr; i++)
+	for (i = 0; i <= SMGR_MAX_ID; i++)
 	{
 		if (smgrsw[i].smgr_shutdown)
 			smgrsw[i].smgr_shutdown();
