@@ -674,6 +674,10 @@ XLogDropDatabase(Oid dbid)
 	smgrcloseall();
 
 	forget_invalid_pages_db(dbid);
+
+	if (XLOGDropDatabase_hook) {
+		XLOGDropDatabase_hook(dbid);
+	}
 }
 
 /*

@@ -346,6 +346,10 @@ bool		StandbyMode = false;
 
 Startup_hook_type Startup_hook = NULL;
 
+ConsistencyCheck_hook_type xlog_check_consistency_hook = NULL;
+
+XLOGDropDatabase_hook_type XLOGDropDatabase_hook = NULL;
+
 /*
  * if recoveryStopsBefore/After returns true, it saves information of the stop
  * point here
@@ -8633,6 +8637,10 @@ CheckRecoveryConsistency(void)
 		 * references to uninitialized pages.
 		 */
 		XLogCheckInvalidPages();
+
+		if (xlog_check_consistency_hook) {
+			xlog_check_consistency_hook();
+		}
 
 		reachedConsistency = true;
 		ereport(LOG,
