@@ -2428,18 +2428,6 @@ appendonly_fetch(AppendOnlyFetchDesc aoFetchDesc,
 	if (aoFetchDesc->currentSegmentFile.isOpen &&
 		segmentFileNum != aoFetchDesc->currentSegmentFile.num)
 	{
-#ifdef USE_ASSERT_CHECKING
-		/*
-		 * Currently, we only support Index Scan on bitmap index and Bitmap Index Scan
-		 * on AO tables, so normally the below warning should not happen.
-		 * See get_index_paths in indxpath.c.
-		 */
-		if (segmentFileNum < aoFetchDesc->currentSegmentFile.num)
-			ereport(WARNING,
-					(errmsg("append-only fetch requires scan prior segment file: segmentFileNum %d, rowNum " INT64_FORMAT ", currentSegmentFileNum %d",
-							segmentFileNum, rowNum,
-							aoFetchDesc->currentSegmentFile.num)));
-#endif
 		closeFetchSegmentFile(aoFetchDesc);
 
 		Assert(!aoFetchDesc->currentSegmentFile.isOpen);
