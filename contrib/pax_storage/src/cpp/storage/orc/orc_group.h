@@ -78,7 +78,7 @@ class OrcGroup : public MicroPartitionReader::Group {
   std::shared_ptr<Bitmap8> micro_partition_visibility_bitmap_;
   size_t row_offset_;
   size_t current_row_index_;
-  std::vector<std::shared_ptr<MemoryObject>> buffer_holders_;
+  std::vector<std::unique_ptr<MemoryObject>> buffer_holders_;
   // only a reference, owner by pax_filter
   const std::vector<int> *proj_col_index_;
 

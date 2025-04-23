@@ -49,7 +49,7 @@ static void CopyFixedRawBufferWithNull(
   std::tie(buffer, buffer_len) =
       column->GetRangeBuffer(data_index_begin, data_range_lens);
 
-  auto null_bitmap = column->GetBitmap();
+  const std::unique_ptr<Bitmap8> &null_bitmap = column->GetBitmap();
   size_t non_null_offset = 0;
   size_t type_len = column->GetTypeLength();
   for (size_t i = range_begin; i < (range_begin + range_lens); i++) {
@@ -122,7 +122,7 @@ static void CopyNonFixedBuffer(PaxColumn *column,
   char *buffer = nullptr;
   size_t buffer_len = 0;
 
-  auto null_bitmap = column->GetBitmap();
+  const std::unique_ptr<Bitmap8> &null_bitmap = column->GetBitmap();
   size_t non_null_offset = 0;
 
   for (size_t i = range_begin; i < (range_begin + range_lens); i++) {
@@ -219,7 +219,7 @@ static void CopyDecimalBuffer(PaxColumn *column,
   size_t buffer_len = 0;
   int32 type_len;
 
-  auto null_bitmap = column->GetBitmap();
+  const std::unique_ptr<Bitmap8> &null_bitmap = column->GetBitmap();
   type_len = VEC_SHORT_NUMERIC_STORE_BYTES;
 
   for (size_t i = range_begin; i < (range_begin + range_lens); i++) {
@@ -279,7 +279,7 @@ void CopyBitPackedBuffer(PaxColumn *column,
   std::tie(buffer, buffer_len) =
       column->GetRangeBuffer(data_index_begin, data_range_lens);
 
-  auto null_bitmap = column->GetBitmap();
+  const std::unique_ptr<Bitmap8> &null_bitmap = column->GetBitmap();
   size_t bit_index = 0;
   size_t non_null_offset = 0;
   size_t type_len = column->GetTypeLength();
@@ -431,7 +431,7 @@ std::pair<size_t, size_t> VecAdapter::AppendPorcFormat(PaxColumns *columns,
 
       vec_cache_buffer_[index].is_dict = true;
       if (column->HasNull()) {
-        auto null_bitmap = column->GetBitmap();
+        const std::unique_ptr<Bitmap8> &null_bitmap = column->GetBitmap();
         size_t non_null_offset = 0;
 
         for (size_t i = 0; i < range_lens; i++) {

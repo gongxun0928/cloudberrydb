@@ -26,6 +26,7 @@
  */
 
 #include "storage/vec/pax_vec_comm.h"
+
 #include "storage/toast/pax_toast.h"
 #ifdef VEC_BUILD
 
@@ -88,12 +89,12 @@ void CopyBitmapBuffer(PaxColumn *column,
       Assert(!null_bits_buffer->GetBuffer());
       null_bits_buffer->Set(BlockBuffer::Alloc<char>(null_align_bytes),
                             null_align_bytes);
-      auto bitmap = column->GetBitmap();
+      const std::unique_ptr<Bitmap8> &bitmap = column->GetBitmap();
       Assert(bitmap);
       CopyBitmap(bitmap.get(), range_begin, range_lens, null_bits_buffer);
       *out_visable_null_counts = range_lens - data_range_lens;
     } else {
-      auto bitmap = column->GetBitmap();
+      const std::unique_ptr<Bitmap8> &bitmap = column->GetBitmap();
       Assert(bitmap);
 
       Bitmap8 null_bitmap(out_range_lens);

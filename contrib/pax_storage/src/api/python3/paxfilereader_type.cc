@@ -323,7 +323,7 @@ static PyObject *paxfilereader_readgroup(PaxFileReaderObject *self,
   try {
     for (; column_index < col_nums; column_index++) {
       const auto &column = (*columns)[column_index];
-      std::shared_ptr<pax::Bitmap8> bm;
+      const std::unique_ptr<pax::Bitmap8> &bm = column->GetBitmap();
       auto null_counts = 0;
       PyObject *schema_item = nullptr;
       long col_oid;
@@ -350,8 +350,6 @@ static PyObject *paxfilereader_readgroup(PaxFileReaderObject *self,
         Py_DECREF(Py_None);
         continue;
       }
-
-      bm = column->GetBitmap();
 
       py_rows = PyList_New(0);
       if (!py_rows) {
