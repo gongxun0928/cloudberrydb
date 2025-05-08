@@ -631,6 +631,18 @@ MemoryContextSetPeakSpace(MemoryContext context, Size nbytes)
 }                               /* MemoryContextSetPeakSpace */
 
 /*
+ * MemoryContextCurrentFreeSpace
+ *      Find the free memory in blocks for this memory context. If recurse is
+ *      true, also include children.
+ */
+Size
+MemoryContextCurrentFreeSpace(MemoryContext context, bool recurse)
+{
+    AssertArg(MemoryContextIsValid(context));
+    return (*context->methods->get_free_space) (context);
+}
+
+/*
  * Find the memory allocated to blocks for this memory context. If recurse is
  * true, also include children.
  */

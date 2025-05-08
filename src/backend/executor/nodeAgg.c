@@ -1911,6 +1911,9 @@ hash_agg_set_limits(AggState *aggstate, double hashentrysize, double input_group
 		*ngroups_limit = *mem_limit / hashentrysize;
 	else
 		*ngroups_limit = 1;
+
+	elog(DEBUG1, "hash_agg_set_limits: mem_limit=%zu KB, ngroups=%lu, input_groups=%.0f, hashentrysize=%.0f",
+		 *mem_limit/1024, *ngroups_limit, input_groups, hashentrysize);
 }
 
 /*
@@ -1933,10 +1936,32 @@ hash_agg_check_limits(AggState *aggstate)
 	 * Don't spill unless there's at least one group in the hash table so we
 	 * can be sure to make progress even in edge cases.
 	 */
-	if (aggstate->hash_ngroups_current > 0 &&
-		(meta_mem + hashkey_mem > aggstate->hash_mem_limit ||
-		 ngroups > aggstate->hash_ngroups_limit))
+	if (unlikely(aggstate->hash_ngroups_current == 0))
+		return;
+
+	if (unlikely(ngroups > aggstate->hash_ngroups_limit))
 	{
+		elog(DEBUG1, "hash_agg_check_limits entry spill mode: ngroups=%lu > limit=%lu",
+			 ngroups, aggstate->hash_ngroups_limit);
+		hash_agg_enter_spill_mode(aggstate);
+		return;
+	}
+
+	if (meta_mem + hashkey_mem > aggstate->hash_mem_limit)
+	{
+		/*
+		 * hashkey_mem is the memory allocated for the hash table,
+		 * but it's not all used for now.  So we need to check the
+		 * free memory in the hash_metacxt.
+		 */
+		Size free_mem = MemoryContextCurrentFreeSpace(aggstate->hashcontext->ecxt_per_tuple_memory, true);
+		if (meta_mem + hashkey_mem - free_mem < aggstate->hash_mem_limit)
+		{
+			return;
+		}
+		elog(DEBUG1, "hash_agg_check_limits entry spill mode: meta_mem=%zu KB, hashkey_mem=%zu KB, free_mem=%zu KB, mem=%zu KB > limit=%zu KB,current ngroups=%lu, limit=%lu",
+			 meta_mem / 1024, hashkey_mem / 1024, free_mem / 1024, (meta_mem + hashkey_mem) / 1024, aggstate->hash_mem_limit / 1024,
+			 ngroups, aggstate->hash_ngroups_limit);
 		hash_agg_enter_spill_mode(aggstate);
 	}
 }
@@ -2276,7 +2301,7 @@ lookup_hash_entries(AggState *aggstate)
 				initialize_hash_entry(aggstate, hashtable, entry);
 			pergroup[setno] = entry->additional;
 		}
-		else
+		else if (!aggstate->streaming)
 		{
 			HashAggSpill *spill = &aggstate->hash_spills[setno];
 			TupleTableSlot *slot = aggstate->tmpcontext->ecxt_outertuple;

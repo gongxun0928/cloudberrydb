@@ -79,6 +79,7 @@ typedef struct MemoryContextMethods
 #ifdef MEMORY_CONTEXT_CHECKING
 	void		(*check) (MemoryContext context);
 #endif
+	Size		(*get_free_space) (MemoryContext context);
 } MemoryContextMethods;
 
 

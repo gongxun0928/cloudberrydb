@@ -361,6 +361,7 @@ static void AllocSetDeclareAccountingRoot(MemoryContext context);
 static Size AllocSetGetCurrentUsage(MemoryContext context);
 static Size AllocSetGetPeakUsage(MemoryContext context);
 static Size AllocSetSetPeakUsage(MemoryContext context, Size nbytes);
+static Size AllocSetGetFreeSpace(MemoryContext context);
 
 #ifdef MEMORY_CONTEXT_CHECKING
 static void AllocSetCheck(MemoryContext context);
@@ -387,6 +388,7 @@ static const MemoryContextMethods AllocSetMethods = {
 #ifdef MEMORY_CONTEXT_CHECKING
 	,AllocSetCheck
 #endif
+	,.get_free_space = AllocSetGetFreeSpace
 };
 
 
@@ -1636,6 +1638,35 @@ AllocSetGetCurrentUsage(MemoryContext context)
 	Assert(IS_MEMORY_ACCOUNT(set));
 
 	return set->currentAllocated;
+}
+
+static Size
+AllocSetGetFreeSpace(MemoryContext context)
+{
+	 AllocSet set = (AllocSet) context;
+    AllocBlock block;
+    Size availableSpace = 0;
+    int fidx;
+    
+    /* 1. calculate the available space in the active blocks */
+    for (block = set->blocks; block != NULL; block = block->next)
+    {
+        availableSpace += block->endptr - block->freeptr;
+    }
+    
+	/* 2. calculate the available space in the free lists */
+    for (fidx = 0; fidx < ALLOCSET_NUM_FREELISTS; fidx++)
+    {
+        AllocChunk chunk;
+        
+        for (chunk = set->freelist[fidx]; chunk != NULL; 
+             chunk = (AllocChunk) chunk->aset)
+        {
+            availableSpace += chunk->size + ALLOC_CHUNKHDRSZ;
+        }
+    }
+    
+    return availableSpace;
 }
 
 static Size

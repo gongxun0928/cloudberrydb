@@ -125,6 +125,7 @@ extern Size MemoryContextSetPeakSpace(MemoryContext context, Size nbytes);
 extern void MemoryContextDeleteImpl(MemoryContext context, const char* sfile, const char *func, int sline);
 
 extern Size MemoryContextMemAllocated(MemoryContext context, bool recurse);
+extern Size MemoryContextCurrentFreeSpace(MemoryContext context, bool recurse);
 extern void MemoryContextStats(MemoryContext context);
 extern void MemoryContextStatsDetail(MemoryContext context, int max_children,
 									 bool print_to_stderr);
