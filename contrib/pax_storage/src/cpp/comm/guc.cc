@@ -126,9 +126,11 @@ static bool CheckDefaultStorageFormat(char **newval, void **extra,
 }
 
 void DefineGUCs() {
-  DefineCustomBoolVariable("pax_enable_debug", "enable pax debug", NULL,
-                           &pax::pax_enable_debug, false, PGC_USERSET, 0, NULL,
-                           NULL, NULL);
+  // LogStatistics need sync between master and primary, so set
+  // GUC_GPDB_NEED_SYNC
+  DefineCustomBoolVariable("pax_log_filter_tree", "Log the filter tree", NULL,
+                           &pax::pax_log_filter_tree, false, PGC_USERSET,
+                           GUC_GPDB_NEED_SYNC, NULL, NULL, NULL);
 
   DefineCustomBoolVariable("pax_enable_sparse_filter",
                            "enable pax filter, contains min/max and bloom "
