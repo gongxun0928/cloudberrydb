@@ -111,10 +111,16 @@ libpostgres.so: $(OBJS) $(SYMBOL_MAP_FILE)
 	$(CXX) -shared $(CXXFLAGS) $(LDFLAGS) $(LDFLAGS_SL) $(export_dynamic) \
 	  $(filter-out main/main.o, $(call expand_subsys,$(OBJS))) $(LIBS) $(SYMBOL_MAPPING_FLAGS) -o $@
 
-postgres: main/main.o libpostgres.so $(top_builddir)/src/port/libpgport_srv.a $(top_builddir)/src/common/libpgcommon_srv.a
+# if enable-build-postgres-with-shared is yes, link postgres with shared library libpostgres.so
+ifeq ($(enable_link_postgres_with_shared),yes)
+postgres: main/main.o libpostgres.so $(top_builddir)/src/port/libpgport_srv.a $(top_builddir)/src/common/libpgcommon_srv.
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $(LDFLAGS_EX) $(export_dynamic) \
 	  main/main.o libpostgres.so $(top_builddir)/src/port/libpgport_srv.a \
 	  $(top_builddir)/src/common/libpgcommon_srv.a $(LIBS) -o $@
+else
+postgres: $(OBJS)
+	$(CXX) $(CXXFLAGS) $(call expand_subsys,$^) $(LDFLAGS) $(LDFLAGS_EX) $(export_dynamic) $(LIBS) $(SYMBOL_MAPPING_FLAGS) -o $@
+endif
 
 else
 postgres: $(OBJS) $(SYMBOL_MAP_FILE)
