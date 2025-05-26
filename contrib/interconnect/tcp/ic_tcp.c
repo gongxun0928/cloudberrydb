@@ -1895,6 +1895,22 @@ SetupTCPInterconnect(EState *estate)
 	estate->es_interconnect_is_setup = true;
 }								/* SetupTCPInterconnect */
 
+static void TeardownInterconnectTCPCallbck(ChunkTransportState *transportStates,
+										   bool hasErrors)
+{
+	PG_TRY();
+	{
+		TeardownTCPInterconnect(transportStates, hasErrors);
+	}
+	PG_CATCH();
+	{
+		char *error_message = elog_message();
+		elog(WARNING, "TeardownInterconnectTCPCallbck: failed to teardown interconnect, error: %s",
+			 error_message ? error_message : "unknown error");
+	}
+	PG_END_TRY();
+}
+
 void
 SetupInterconnectTCP(EState *estate)
 {
@@ -1910,7 +1926,7 @@ SetupInterconnectTCP(EState *estate)
 		elog(ERROR, "SetupInterconnectTCP: no slice table ?");
 	}
 
-	h = allocate_interconnect_handle(TeardownInterconnectTCP);
+	h = allocate_interconnect_handle(TeardownInterconnectTCPCallbck);
 
 	Assert(InterconnectContext != NULL);
 	oldContext = MemoryContextSwitchTo(InterconnectContext);
