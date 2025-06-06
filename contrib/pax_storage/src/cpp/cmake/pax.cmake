@@ -76,6 +76,7 @@ set(pax_storage_src
     storage/wal/pax_wal.cc
     storage/wal/paxc_desc.c
     storage/wal/paxc_wal.cc
+    storage/plan/pax_plan.cc
   )
 
 set(pax_clustering_src

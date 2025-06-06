@@ -42,6 +42,7 @@
 #include "comm/paxc_wrappers.h"
 #include "comm/vec_numeric.h"
 #include "exceptions/CException.h"
+#include "storage/plan/pax_plan.h"
 #include "storage/local_file_system.h"
 #ifdef VEC_BUILD
 #include "storage/vec_parallel_pax.h"
@@ -1207,6 +1208,8 @@ void _PG_init(void) {  // NOLINT
   paxc::RegisterPaxRmgr();
 
   paxc::RegisterPaxSmgr();
+
+  pax_planner_init();
 
 #ifdef VEC_BUILD
   // register parallel scan to arrow
