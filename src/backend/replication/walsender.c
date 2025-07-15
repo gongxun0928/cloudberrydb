@@ -79,6 +79,7 @@
 #include "replication/walreceiver.h"
 #include "replication/walsender.h"
 #include "replication/walsender_private.h"
+#include "replication/waldatacomm.h"
 #include "storage/condition_variable.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
@@ -100,6 +101,12 @@
 #include "cdb/cdbvars.h"
 #include "replication/gp_replication.h"
 #include "utils/faultinjector.h"
+
+/* PAX WAL data communication includes */
+#include "replication/waldatacomm.h"
+
+
+
 
 /*
  * Maximum data payload in a WAL data message.  Must be >= XLOG_BLCKSZ.
@@ -238,7 +245,9 @@ static void InitWalSenderSlot(void);
 static void WalSndKill(int code, Datum arg);
 static void WalSndShutdown(void) pg_attribute_noreturn();
 static void XLogSendPhysical(void);
+static void XLogSendPhysicalWithRecordParsing(void);
 static void XLogSendLogical(void);
+
 static void WalSndDone(WalSndSendDataCallback send_data);
 static XLogRecPtr GetStandbyFlushRecPtr(void);
 static void IdentifySystem(void);
@@ -270,6 +279,8 @@ static void WalSndSegmentOpen(XLogReaderState *state, XLogSegNo nextSegNo,
 
 static void WalSndSetCaughtupWithinRange(bool catchup_within_range);
 static bool WalSndIsCatchupWithinRange(XLogRecPtr currRecPtr, XLogRecPtr catchupRecPtr);
+static void VerityPaxInsertMessage(XLogReaderState *xlogreader, XLogRecord *record);
+static void SendPaxInsertReferenceDataMessage(XLogReaderState *xlogreader, XLogRecord *record);
 
 
 /* Initialize walsender process before entering the main command loop */
@@ -605,7 +616,8 @@ StartReplication(StartReplicationCmd *cmd)
 	/* create xlogreader for physical replication */
 	xlogreader =
 		XLogReaderAllocate(wal_segment_size, NULL,
-						   XL_ROUTINE(.segment_open = WalSndSegmentOpen,
+						   XL_ROUTINE(.page_read = read_local_xlog_page,
+									  .segment_open = WalSndSegmentOpen,
 									  .segment_close = wal_segment_close),
 						   NULL);
 
@@ -770,7 +782,7 @@ StartReplication(StartReplicationCmd *cmd)
 		/* Main loop of walsender */
 		replication_active = true;
 
-		WalSndLoop(XLogSendPhysical);
+		WalSndLoop(XLogSendPhysicalWithRecordParsing);
 
 		replication_active = false;
 		if (got_STOPPING)
@@ -3028,6 +3040,600 @@ retry:
 	return;
 }
 
+static void
+XLogSendPhysicalWithRecordParsing(void)
+{
+	XLogRecPtr	SendRqstPtr;
+	XLogRecPtr	startptr;
+	XLogRecPtr	endptr;
+	Size		nbytes;
+	XLogSegNo	segno;
+	WALReadError errinfo;
+	XLogRecord *record;
+	char	   *errm;
+
+	/* If requested switch the WAL sender to the stopping state. */
+	if (got_STOPPING)
+		WalSndSetState(WALSNDSTATE_STOPPING);
+
+	if (streamingDoneSending)
+	{
+		WalSndCaughtUp = true;
+		return;
+	}
+
+	/* Figure out how far we can safely send the WAL. */
+	if (sendTimeLineIsHistoric)
+	{
+		/*
+		 * Streaming an old timeline that's in this server's history, but is
+		 * not the one we're currently inserting or replaying. It can be
+		 * streamed up to the point where we switched off that timeline.
+		 */
+		SendRqstPtr = sendTimeLineValidUpto;
+	}
+	else if (am_cascading_walsender)
+	{
+		/*
+		 * Streaming the latest timeline on a standby.
+		 *
+		 * Attempt to send all WAL that has already been replayed, so that we
+		 * know it's valid. If we're receiving WAL through streaming
+		 * replication, it's also OK to send any WAL that has been received
+		 * but not replayed.
+		 *
+		 * The timeline we're recovering from can change, or we can be
+		 * promoted. In either case, the current timeline becomes historic. We
+		 * need to detect that so that we don't try to stream past the point
+		 * where we switched to another timeline. We check for promotion or
+		 * timeline switch after calculating FlushPtr, to avoid a race
+		 * condition: if the timeline becomes historic just after we checked
+		 * that it was still current, it's still be OK to stream it up to the
+		 * FlushPtr that was calculated before it became historic.
+		 */
+		bool		becameHistoric = false;
+
+		SendRqstPtr = GetStandbyFlushRecPtr();
+
+		if (!RecoveryInProgress())
+		{
+			/*
+			 * We have been promoted. RecoveryInProgress() updated
+			 * ThisTimeLineID to the new current timeline.
+			 */
+			am_cascading_walsender = false;
+			becameHistoric = true;
+		}
+		else
+		{
+			/*
+			 * Still a cascading standby. But is the timeline we're sending
+			 * still the one recovery is recovering from? ThisTimeLineID was
+			 * updated by the GetStandbyFlushRecPtr() call above.
+			 */
+			if (sendTimeLine != ThisTimeLineID)
+				becameHistoric = true;
+		}
+
+		if (becameHistoric)
+		{
+			/*
+			 * The timeline we were sending has become historic. Read the
+			 * timeline history file of the new timeline to see where exactly
+			 * we forked off from the timeline we were sending.
+			 */
+			List	   *history;
+
+			history = readTimeLineHistory(ThisTimeLineID);
+			sendTimeLineValidUpto = tliSwitchPoint(sendTimeLine, history, &sendTimeLineNextTLI);
+
+			Assert(sendTimeLine < sendTimeLineNextTLI);
+			list_free_deep(history);
+
+			sendTimeLineIsHistoric = true;
+
+			SendRqstPtr = sendTimeLineValidUpto;
+		}
+	}
+	else
+	{
+		/*
+		 * Streaming the current timeline on a primary.
+		 *
+		 * Attempt to send all data that's already been written out and
+		 * fsync'd to disk.  We cannot go further than what's been written out
+		 * given the current implementation of WALRead().  And in any case
+		 * it's unsafe to send WAL that is not securely down to disk on the
+		 * primary: if the primary subsequently crashes and restarts, standbys
+		 * must not have applied any WAL that got lost on the primary.
+		 */
+		SendRqstPtr = GetFlushRecPtr();
+	}
+
+	/*
+	 * Record the current system time as an approximation of the time at which
+	 * this WAL location was written for the purposes of lag tracking.
+	 */
+	LagTrackerWrite(SendRqstPtr, GetCurrentTimestamp());
+
+	/*
+	 * If this is a historic timeline and we've reached the point where we
+	 * forked to the next timeline, stop streaming.
+	 */
+	if (sendTimeLineIsHistoric && sendTimeLineValidUpto <= sentPtr)
+	{
+		/* close the current file. */
+		if (xlogreader->seg.ws_file >= 0)
+			wal_segment_close(xlogreader);
+
+		/* Send CopyDone */
+		pq_putmessage_noblock('c', NULL, 0);
+		streamingDoneSending = true;
+
+		WalSndCaughtUp = true;
+
+		elog(DEBUG1, "XLogSendPhysicalWithRecordParsing walsender reached end of timeline at %X/%X (sent up to %X/%X)",
+			 LSN_FORMAT_ARGS(sendTimeLineValidUpto),
+			 LSN_FORMAT_ARGS(sentPtr));
+		return;
+	}
+
+	/* Do we have any work to do? */
+	Assert(sentPtr <= SendRqstPtr);
+	if (SendRqstPtr <= sentPtr)
+	{
+		WalSndCaughtUp = true;
+		WalSndCaughtUpWithinRange = true;
+
+		elogif(debug_walrepl_snd, LOG,
+				"XLogSendPhysicalWithRecordParsing walsnd xlogSend -- "
+				"SendRqstPtr equals sentPtr (%X/%X). Nothing to read from "
+				"xlog. Setting caughtup and caughtup_within_range before return.",
+			   (uint32) (sentPtr >> 32), (uint32) sentPtr);
+		return;
+	}
+
+	/*
+	 * Figure out how much to send in one message. If there's no more than
+	 * MAX_SEND_SIZE bytes to send, send everything. Otherwise send
+	 * MAX_SEND_SIZE bytes, but round back to logfile or page boundary.
+	 *
+	 * The rounding is not only for performance reasons. Walreceiver relies on
+	 * the fact that we never split a WAL record across two messages. Since a
+	 * long WAL record is split at page boundary into continuation records,
+	 * page boundary is always a safe cut-off point. We also assume that
+	 * SendRqstPtr never points to the middle of a WAL record.
+	 */
+	startptr = sentPtr;
+	endptr = startptr;
+	endptr += MAX_SEND_SIZE;
+
+	/* if we went beyond SendRqstPtr, back off */
+	if (SendRqstPtr <= endptr)
+	{
+		endptr = SendRqstPtr;
+		if (sendTimeLineIsHistoric)
+			WalSndCaughtUp = false;
+		else
+			WalSndCaughtUp = true;
+	}
+	else
+	{
+		/* round down to page boundary. */
+		endptr -= (endptr % XLOG_BLCKSZ);
+		WalSndCaughtUp = false;
+	}
+
+	/*
+	 * Parse and print WAL records in the range we're about to send
+	 * This is for debugging/logging purposes only
+	 * 
+	 * Note: We need to be careful about WAL record boundaries. If startptr
+	 * points to the middle of a WAL record, we should skip parsing until
+	 * we find a complete record.
+	 */
+	XLogRecPtr current_lsn = startptr;
+	XLogRecPtr last_complete_record_end = startptr;
+	
+	/* First, try to find the start of the next complete WAL record */
+	XLogBeginRead(xlogreader, current_lsn);
+	record = XLogReadRecord(xlogreader, &errm);
+	if (errm != NULL)
+	{
+		/* If we can't read from startptr, it might be in the middle of a record */
+		elog(ERROR,
+				"Could not parse WAL record from startptr %X/%X: %s. 	"
+				"This might be in the middle of a WAL record, skipping parsing.",
+				(uint32) (current_lsn >> 32), (uint32) current_lsn, errm);
+		// TODO:(should we fall back to physical sending??)
+	}
+	else if (record != NULL)
+	{
+		/* We found a complete record, print it and continue parsing */
+		last_complete_record_end = xlogreader->EndRecPtr;
+		
+		elogif(debug_walrepl_snd, LOG,
+				"XLogSendPhysicalWithRecordParsing first walsnd record -- "
+				"LSN: %X/%X, RMID: %u, INFO: 0x%02X, LEN: %u, "
+				"PREV: %X/%X, NEXT LSN: %X/%X, XID: %u",
+				(uint32) (current_lsn >> 32), (uint32) current_lsn,
+				XLogRecGetRmid(xlogreader),
+				XLogRecGetInfo(xlogreader),
+				XLogRecGetTotalLen(xlogreader),
+				(uint32) (record->xl_prev >> 32), (uint32) record->xl_prev,
+				(uint32) (xlogreader->EndRecPtr >> 32), (uint32) xlogreader->EndRecPtr,
+				record->xl_xid);
+
+		/* Check if this is a PAX INSERT record and send 'f' message */
+		if (IsPaxRecord(xlogreader))
+		{
+			if(GetPaxRecordType(xlogreader) == XLOG_PAX_INSERT_REFERENCE_DATA)
+			{
+				SendPaxInsertReferenceDataMessage(xlogreader, record);
+			}
+			else if(GetPaxRecordType(xlogreader) == XLOG_PAX_INSERT)
+			{
+				VerityPaxInsertMessage(xlogreader, record);
+			}
+		}
+
+		/* Continue parsing subsequent records */
+		current_lsn = last_complete_record_end;
+		while (current_lsn < endptr)
+		{
+			XLogBeginRead(xlogreader, current_lsn);
+			record = XLogReadRecord(xlogreader, &errm);
+			if (errm != NULL)
+			{
+				elogif(debug_walrepl_snd, LOG,
+						"XLogSendPhysicalWithRecordParsing walsnd record -- "
+						"Failed to parse WAL record at %X/%X: %s",
+						(uint32) (current_lsn >> 32), (uint32) current_lsn, errm);
+				break;
+			}
+
+			if (record == NULL)
+			{
+				/* No more records available in this range */
+				break;
+			}
+
+			/* Update the end position of the last complete record */
+			last_complete_record_end = xlogreader->EndRecPtr;
+
+			elogif(debug_walrepl_snd, LOG,
+					"XLogSendPhysicalWithRecordParsing next walsnd record -- "
+					"LSN: %X/%X, RMID: %u, INFO: 0x%02X, LEN: %u, "
+					"PREV: %X/%X,NEXT LSN: %X/%X, XID: %u",
+					(uint32) (current_lsn >> 32), (uint32) current_lsn,
+					XLogRecGetRmid(xlogreader),
+					XLogRecGetInfo(xlogreader),
+					XLogRecGetTotalLen(xlogreader),
+					(uint32) (record->xl_prev >> 32), (uint32) record->xl_prev,
+					(uint32) (xlogreader->EndRecPtr >> 32), (uint32) xlogreader->EndRecPtr,
+					record->xl_xid);
+
+			/* Check if this is a PAX INSERT record and send 'f' message */
+			if (IsPaxRecord(xlogreader))
+			{
+				if(GetPaxRecordType(xlogreader) == XLOG_PAX_INSERT_REFERENCE_DATA)
+				{
+					SendPaxInsertReferenceDataMessage(xlogreader, record);
+				}
+				else if(GetPaxRecordType(xlogreader) == XLOG_PAX_INSERT)
+				{
+					VerityPaxInsertMessage(xlogreader, record);
+				}
+			}
+
+			/* Move to next record */
+			current_lsn = last_complete_record_end;
+
+			/* Check if we've reached the end of our send range */
+			if (current_lsn >= endptr)
+				break;
+		}
+	}
+
+	/*
+	 * Calculate the number of bytes to send.
+	 * last_complete_record_end points to the end of the last complete record we parsed.
+	 * We should send data from startptr to last_complete_record_end.
+	 */
+	nbytes = last_complete_record_end - startptr;
+
+	/*
+	 * Now send the WAL data using the original physical replication logic
+	 * This ensures compatibility with mirror creation
+	 */
+	resetStringInfo(&output_message);
+	pq_sendbyte(&output_message, 'w');
+
+	pq_sendint64(&output_message, startptr);	/* dataStart */
+	pq_sendint64(&output_message, SendRqstPtr); /* walEnd */
+	pq_sendint64(&output_message, 0);	/* sendtime, filled in last */
+
+	/*
+	 * Read the log directly into the output buffer to avoid extra memcpy
+	 * calls.
+	 */
+	enlargeStringInfo(&output_message, nbytes);
+
+retry:
+	if (!WALRead(xlogreader,
+				 &output_message.data[output_message.len],
+				 startptr,
+				 nbytes,
+				 xlogreader->seg.ws_tli,	/* Pass the current TLI because
+											 * only WalSndSegmentOpen controls
+											 * whether new TLI is needed. */
+				 &errinfo))
+	{
+		WalSndCtl->error = WALSNDERROR_WALREAD;
+		WALReadRaiseError(&errinfo);
+	}
+	else
+		WalSndCtl->error = WALSNDERROR_NONE;
+
+	/* See logical_read_xlog_page(). */
+	XLByteToSeg(startptr, segno, xlogreader->segcxt.ws_segsize);
+	CheckXLogRemoved(segno, xlogreader->seg.ws_tli);
+
+	/*
+	 * During recovery, the currently-open WAL file might be replaced with the
+	 * file of the same name retrieved from archive. So we always need to
+	 * check what we read was valid after reading into the buffer. If it's
+	 * invalid, we try to open and read the file again.
+	 */
+	if (am_cascading_walsender)
+	{
+		WalSnd	   *walsnd = MyWalSnd;
+		bool		reload;
+
+		SpinLockAcquire(&walsnd->mutex);
+		reload = walsnd->needreload;
+		walsnd->needreload = false;
+		SpinLockRelease(&walsnd->mutex);
+
+		if (reload && xlogreader->seg.ws_file >= 0)
+		{
+			wal_segment_close(xlogreader);
+
+			goto retry;
+		}
+	}
+
+	output_message.len += nbytes;
+	output_message.data[output_message.len] = '\0';
+
+	/*
+	 * Fill the send timestamp last, so that it is taken as late as possible.
+	 */
+	resetStringInfo(&tmpbuf);
+	pq_sendint64(&tmpbuf, GetCurrentTimestamp());
+	memcpy(&output_message.data[1 + sizeof(int64) + sizeof(int64)],
+		   tmpbuf.data, sizeof(int64));
+
+	pq_putmessage_noblock('d', output_message.data, output_message.len);
+
+	sentPtr = last_complete_record_end;
+
+	/* See if we're within catchup range */
+	if (!WalSndCaughtUpWithinRange)
+		WalSndCaughtUpWithinRange = WalSndIsCatchupWithinRange(sentPtr, SendRqstPtr);
+
+	/* Update shared memory status */
+	{
+		WalSnd	   *walsnd = MyWalSnd;
+
+		SpinLockAcquire(&walsnd->mutex);
+		walsnd->sentPtr = sentPtr;
+		SpinLockRelease(&walsnd->mutex);
+	}
+
+	/* Report progress of XLOG streaming in PS display */
+	if (update_process_title)
+	{
+		char		activitymsg[50];
+
+		snprintf(activitymsg, sizeof(activitymsg), "streaming %X/%X",
+				 LSN_FORMAT_ARGS(sentPtr));
+		set_ps_display(activitymsg);
+	}
+
+	elogif(debug_walrepl_snd, LOG,
+			"walsnd xlogsend -- "
+			"Latest xlog flush location on master (SendRqstPtr) = %X/%X, "
+			"Start xLog read location(startptr) = %X/%X, "
+			"Actual read end xLog location (endptr) = %X/%X, "
+			"Bytes Read = %d, "
+			"Caughtup within range = %s, "
+			"Fully Caughtup = %s.",
+		   (uint32)(SendRqstPtr >> 32), (uint32) SendRqstPtr,
+		   (uint32) (startptr >> 32), (uint32) startptr,
+		   (uint32) (sentPtr >> 32), (uint32) sentPtr,
+			(int)nbytes,
+			WalSndCaughtUpWithinRange ? "true" : "false",
+			WalSndCaughtUp ? "true" : "false");
+
+	return;
+}
+
+/*
+ * Send PAX INSERT record as a separate 'f' message to walreceiver.
+ * This function parses the PAX INSERT WAL record and sends it as a special
+ * message type 'f' to the walreceiver for immediate processing.
+ */
+static void
+VerityPaxInsertMessage(XLogReaderState *xlogreader, XLogRecord *record)
+{
+	char *relpath;
+	char filepath[MAX_PATH_FILE_NAME_LEN];
+	char *path;
+	char *read_path;
+	int written_len;
+	File file; // write file
+	int fileFlags;
+
+	char *rec = XLogRecGetData(xlogreader);
+	xl_pax_insert *xlrec = (xl_pax_insert *)rec;
+
+	// in dfs mode, no wal log for pax storage
+	relpath = BuildPaxDirectoryPath(xlrec->target.node, InvalidBackendId);
+
+	Assert(xlrec->target.file_name_len < MAX_PATH_FILE_NAME_LEN);
+
+	memcpy(filepath, rec + SizeOfPAXInsert, xlrec->target.file_name_len);
+	filepath[xlrec->target.file_name_len] = '\0';
+
+	char *buffer = (char *)xlrec + SizeOfPAXInsert + xlrec->target.file_name_len;
+	int32 bufferLen =
+		XLogRecGetDataLen(xlogreader) - SizeOfPAXInsert - xlrec->target.file_name_len;
+
+	read_path = psprintf("%s/%s", relpath, filepath);
+
+	elogif(debug_walrepl_snd, INFO, "VerityPaxInsertMessage LSN: %X/%X, node: %u/%u/%u, read_path: %s, offset: %ld, bufferLen: %d",
+			(uint32) (xlogreader->ReadRecPtr >> 32), (uint32) xlogreader->ReadRecPtr,
+			xlrec->target.node.dbNode, xlrec->target.node.spcNode, xlrec->target.node.relNode,
+			read_path, xlrec->target.offset, bufferLen);
+
+	pfree(relpath);
+
+	// read data from pax file
+	int pax_file = open(read_path, O_RDONLY | PG_BINARY, 0640);
+	if (pax_file < 0)
+	{
+		elogif(debug_walrepl_snd, ERROR, "failed to open file %s", read_path);
+		return;
+	}
+
+	char *pax_buffer = (char *)malloc(bufferLen);
+	int nbytes = pread(pax_file, pax_buffer, bufferLen, xlrec->target.offset);
+	if (nbytes < 0)
+	{
+		const char *error_msg = strerror(errno);
+		elogif(debug_walrepl_snd, ERROR, "failed to read file %s, error: %s", read_path, error_msg);
+		return;
+	}
+
+	close(pax_file);
+
+	// compare the buffer with the pax_buffer
+	// if failed, write the buffer to the file
+	if (memcmp(buffer, pax_buffer, bufferLen) != 0)
+	{
+		pfree(read_path);
+		pfree(pax_buffer);
+
+		path = psprintf("%s/%s", "/tmp/pax/", filepath);
+		if (xlrec->target.offset == 0)
+		{
+			// why we need to truncate here?
+			// If the previous transaction was abnormal, the file name may be reused.
+			// If O_TRUNC is not specified, the tail of the file may be garbage data
+			// from the last wal synchronization.
+			// for example:
+			// tx1: write 1024 bytes to file, and crash
+			// tx2: write 512 bytes from offset 0 to same file, the last 512 bytes from
+			// offset 512 will be garbage data
+			fileFlags = O_RDWR | PG_BINARY | O_CREAT | O_TRUNC;
+			file = open(path, fileFlags, 0640);
+		}
+		else
+		{
+			fileFlags = O_RDWR | PG_BINARY;
+			file = open(path, fileFlags, 0640);
+		}
+
+		if (file < 0)
+		{
+			elogif(debug_walrepl_snd, ERROR, "failed to open file %s", path);
+			return;
+		}
+
+		written_len = pwrite(file, buffer, bufferLen, xlrec->target.offset);
+
+		if (written_len < 0 || written_len != bufferLen)
+		{
+			ereport(ERROR, (errcode_for_file_access(),
+							errmsg("failed to write %d bytes in file \"%s\": %m",
+								bufferLen, path)));
+		}
+
+		close(file);
+		pfree(path);
+		elogif(debug_walrepl_snd, LOG, "VerityPaxInsertMessage buffer mismatch for file %s", read_path);
+	}
+
+	elogif(debug_walrepl_snd, INFO, "VerityPaxInsertMessage buffer match for file %s", read_path);
+
+	free(pax_buffer);
+	pfree(read_path);
+}
+
+static void SendPaxInsertReferenceDataMessage(XLogReaderState *xlogreader, XLogRecord *record)
+{
+	StringInfoData pax_message;
+	char *relpath;
+	char filepath[MAX_PATH_FILE_NAME_LEN];
+	char	   *rec = XLogRecGetData(xlogreader);
+	xl_pax_insert_reference_data *xlrec = (xl_pax_insert_reference_data *)rec;
+	
+	Assert(IsPaxRecord(xlogreader));
+	Assert(GetPaxRecordType(xlogreader) == XLOG_PAX_INSERT_REFERENCE_DATA);
+	
+	
+	initStringInfo(&pax_message);
+	pq_sendbyte(&pax_message, 'f');
+	
+	pq_sendint64(&pax_message, xlogreader->ReadRecPtr); /* record LSN */
+	pq_sendint64(&pax_message, GetCurrentTimestamp());  /* send time */
+	pq_sendbytes(&pax_message, rec, SizeOfPAXInsertReferenceData);
+	pq_sendbytes(&pax_message, rec + SizeOfPAXInsertReferenceData, xlrec->target.file_name_len);
+	
+	relpath = (char *)BuildPaxDirectoryPath(xlrec->target.node, InvalidBackendId);
+
+	Assert(xlrec->target.file_name_len < MAX_PATH_FILE_NAME_LEN);
+
+	memcpy(filepath, rec + SizeOfPAXInsertReferenceData, xlrec->target.file_name_len);
+	filepath[xlrec->target.file_name_len] = '\0';
+
+	char *path = psprintf("%s/%s", relpath, filepath);
+
+	int pax_file = open(path, O_RDONLY | PG_BINARY, 0640);
+	if (pax_file < 0)
+	{
+		elogif(debug_walrepl_snd, ERROR, "failed to open file %s", path);
+		return;
+	}
+
+	char *pax_buffer = (char *)malloc(xlrec->buffer_len);
+	int nbytes = pread(pax_file, pax_buffer, xlrec->buffer_len, xlrec->target.offset);
+	if (nbytes < 0)
+	{
+		const char *error_msg = strerror(errno);
+		elogif(debug_walrepl_snd, ERROR, "failed to read file %s, error: %s", path, error_msg);
+		return;
+	}
+
+	Assert(nbytes == xlrec->buffer_len);
+	pq_sendbytes(&pax_message, pax_buffer, nbytes);
+
+	//send the message as CopyData
+	pq_putmessage_noblock('d', pax_message.data, pax_message.len);
+
+	free(pax_buffer);
+	pfree(path);
+	close(pax_file);
+	
+	elogif(debug_walrepl_snd, LOG, "sent PAX INSERT REFERENCE DATA message "
+			"LSN: %X/%X, node: %u/%u/%u, filename: %s, bufferLen: %ld",
+			(uint32) (xlogreader->ReadRecPtr >> 32), (uint32) xlogreader->ReadRecPtr,
+			xlrec->target.node.dbNode, xlrec->target.node.spcNode, xlrec->target.node.relNode,
+			filepath, xlrec->buffer_len);
+
+}
+
 /*
  * Stream out logically decoded data.
  */
@@ -3101,6 +3707,8 @@ XLogSendLogical(void)
 		SpinLockRelease(&walsnd->mutex);
 	}
 }
+
+
 
 /*
  * Shutdown if the sender is caught up.

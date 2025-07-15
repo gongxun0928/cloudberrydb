@@ -127,7 +127,7 @@ static bool CheckDefaultStorageFormat(char **newval, void **extra,
 
 void DefineGUCs() {
   DefineCustomBoolVariable("pax_enable_debug", "enable pax debug", NULL,
-                           &pax::pax_enable_debug, false, PGC_USERSET,
+                           &pax::pax_enable_debug, true, PGC_USERSET,
                            GUC_GPDB_NEED_SYNC, NULL, NULL, NULL);
 
   DefineCustomBoolVariable("pax_enable_sparse_filter",

@@ -25,7 +25,8 @@ OBJS = \
 	syncrep_gram.o \
 	walreceiver.o \
 	walreceiverfuncs.o \
-	walsender.o
+	walsender.o \
+	waldatacomm.o
 
 OBJS += gp_replication.o
 

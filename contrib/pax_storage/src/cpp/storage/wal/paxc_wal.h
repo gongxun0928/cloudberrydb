@@ -42,6 +42,8 @@ void RegisterPaxRmgr();
 void XLogPaxInsert(RelFileNode node, const char *filename, int64 offset,
                    void *buffer, int32 bufferLen);
 
+void XLogPaxInsertReferenceData(RelFileNode node, const char *filename, int64 offset,int32 bufferLen);
+
 void XLogPaxCreateDirectory(RelFileNode node);
 
 void XLogPaxTruncate(RelFileNode node);

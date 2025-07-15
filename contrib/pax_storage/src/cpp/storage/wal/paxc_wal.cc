@@ -237,6 +237,36 @@ void XLogPaxInsert(RelFileNode node, const char *filename, int64 offset,
   wait_to_avoid_large_repl_lag();
 }
 
+void XLogPaxInsertReferenceData(RelFileNode node, const char *filename, int64 offset,int32 bufferLen) {
+  int file_name_len = strlen(filename);
+
+  if (file_name_len >= MAX_PATH_FILE_NAME_LEN) {
+    ereport(ERROR, (errcode_for_file_access(),
+                    errmsg("filename length is too long: %u and will truncate",
+                           file_name_len)));
+  }
+
+  xl_pax_insert_reference_data xlrec;
+  xlrec.target.node = node;
+  xlrec.target.file_name_len = file_name_len;
+  xlrec.target.offset = offset;
+  xlrec.buffer_len = bufferLen;
+
+  XLogBeginInsert();
+  XLogRegisterData((char *)&xlrec, sizeof(xl_pax_insert_reference_data));
+  XLogRegisterData((char *)filename, xlrec.target.file_name_len);
+
+  XLogRecPtr lsn = XLogInsert(PAX_RMGR_ID, XLOG_PAX_INSERT_REFERENCE_DATA);
+  PAX_LOG_IF(pax::pax_enable_debug,
+             "pax xlog insert reference data, node: %u/%u/%u,filename: %s, offset: %ld, "
+             "bufferLen: %d, "
+             "xlog_ptr: %X/%X",
+             node.dbNode, node.spcNode, node.relNode, filename, offset,
+             bufferLen, (uint32)(lsn >> 32), (uint32)lsn);
+
+  SIMPLE_FAULT_INJECTOR("XLogPaxInsertReferenceData");
+}
+
 void XLogPaxCreateDirectory(RelFileNode node) {
   xl_pax_directory xlrec;
   xlrec.node = node;
@@ -373,6 +403,37 @@ void XLogRedoPaxInsert(XLogReaderState *record) {
   FileClose(file);
 }
 
+void XLogRedoPaxInsertReferenceData(XLogReaderState *record) {
+  char *relpath;
+  char filepath[MAX_PATH_FILE_NAME_LEN];
+  char *path;
+
+  char *rec = XLogRecGetData(record);
+  xl_pax_insert_reference_data *xlrec = (xl_pax_insert_reference_data *)rec;
+
+  // if directory has been marked as invalid, skip
+  if (!IsPaxDirectoryValid(xlrec->target.node)) {
+    return;
+  }
+
+  // in dfs mode, no wal log for pax storage
+  relpath = BuildPaxDirectoryPath(xlrec->target.node, InvalidBackendId);
+
+  Assert(xlrec->target.file_name_len < MAX_PATH_FILE_NAME_LEN);
+
+  memcpy(filepath, rec + SizeOfPAXInsert, xlrec->target.file_name_len);
+  filepath[xlrec->target.file_name_len] = '\0';
+
+  path = psprintf("%s/%s", relpath, filepath);
+
+  PAX_LOG_IF(pax::pax_enable_debug,
+             "pax xlog redo insert reference data, node: %u/%u/%u, offset: %ld, "
+             "path: %s, bufferLen: %ld",
+             xlrec->target.node.dbNode, xlrec->target.node.spcNode,
+             xlrec->target.node.relNode, xlrec->target.offset, path,
+             xlrec->buffer_len);
+}
+
 void XLogRedoPaxCreateDirectory(XLogReaderState *record) {
   char *dirpath = NULL;
   char *rec = XLogRecGetData(record);
@@ -451,6 +512,10 @@ static void pax_rmgr_redo(XLogReaderState *record) {
     }
     case XLOG_PAX_TRUNCATE: {
       paxc::XLogRedoPaxTruncate(record);
+      break;
+    }
+    case XLOG_PAX_INSERT_REFERENCE_DATA: {
+      paxc::XLogRedoPaxInsertReferenceData(record);
       break;
     }
     default:

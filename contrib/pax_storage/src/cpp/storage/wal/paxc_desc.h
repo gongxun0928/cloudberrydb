@@ -53,12 +53,18 @@ extern "C" {
 #define XLOG_PAX_INSERT 0x00
 #define XLOG_PAX_CREATE_DIRECTORY 0x10
 #define XLOG_PAX_TRUNCATE 0x20
+#define XLOG_PAX_INSERT_REFERENCE_DATA 0x30
 
 typedef struct xl_pax_target {
   RelFileNode node;
   uint16 file_name_len;
   int64 offset;
 } xl_pax_target;
+
+typedef struct xl_pax_insert_reference_data {
+  xl_pax_target target;
+  int64 buffer_len;
+} xl_pax_insert_reference_data;
 
 #define SizeOfPAXTarget (sizeof(xl_pax_target))
 

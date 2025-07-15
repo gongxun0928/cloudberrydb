@@ -278,10 +278,9 @@ void OrcWriter::Flush() {
     // should not write wal) should write wal log, paxformat.so should not write
     // wal
     if (writer_options_.need_wal) {
-      cbdb::XLogPaxInsert(
+      cbdb::XLogPaxInsertReferenceData(
           writer_options_.node, writer_options_.block_id.c_str(),
           current_offset_ - buffer_mem_stream.GetDataBuffer()->Used(),
-          buffer_mem_stream.GetDataBuffer()->GetBuffer(),
           buffer_mem_stream.GetDataBuffer()->Used());
     }
     if (toast_mem.GetBuffer()) {
@@ -292,9 +291,9 @@ void OrcWriter::Flush() {
       if (writer_options_.need_wal) {
         std::string toast_file_name =
             writer_options_.block_id + TOAST_FILE_SUFFIX;
-        cbdb::XLogPaxInsert(writer_options_.node, toast_file_name.c_str(),
-                            current_toast_file_offset_ - toast_mem.Used(),
-                            toast_mem.GetBuffer(), toast_mem.Used());
+        cbdb::XLogPaxInsertReferenceData(
+            writer_options_.node, toast_file_name.c_str(),
+            current_toast_file_offset_ - toast_mem.Used(), toast_mem.Used());
       }
     }
 
@@ -599,10 +598,9 @@ void OrcWriter::MergePaxColumns(OrcWriter *writer) {
                  current_offset_ - buffer_mem_stream.GetDataBuffer()->Used());
 
   if (writer_options_.need_wal) {
-    cbdb::XLogPaxInsert(
+    cbdb::XLogPaxInsertReferenceData(
         writer_options_.node, writer_options_.block_id.c_str(),
         current_offset_ - buffer_mem_stream.GetDataBuffer()->Used(),
-        buffer_mem_stream.GetDataBuffer()->GetBuffer(),
         buffer_mem_stream.GetDataBuffer()->Used());
   }
 
@@ -615,9 +613,9 @@ void OrcWriter::MergePaxColumns(OrcWriter *writer) {
     if (writer_options_.need_wal) {
       std::string toast_file_name =
           writer_options_.block_id + TOAST_FILE_SUFFIX;
-      cbdb::XLogPaxInsert(writer_options_.node, toast_file_name.c_str(),
-                          current_toast_file_offset_ - toast_mem.Used(),
-                          toast_mem.GetBuffer(), toast_mem.Used());
+      cbdb::XLogPaxInsertReferenceData(
+          writer_options_.node, toast_file_name.c_str(),
+          current_toast_file_offset_ - toast_mem.Used(), toast_mem.Used());
     }
   }
 
@@ -658,8 +656,9 @@ void OrcWriter::MergeGroup(OrcWriter *orc_writer, int group_index,
   file_->PWriteN(merge_buffer->GetBuffer(), total_len, current_offset_);
 
   if (writer_options_.need_wal) {
-    cbdb::XLogPaxInsert(writer_options_.node, writer_options_.block_id.c_str(),
-                        current_offset_, merge_buffer->GetBuffer(), total_len);
+    cbdb::XLogPaxInsertReferenceData(writer_options_.node,
+                                     writer_options_.block_id.c_str(),
+                                     current_offset_, total_len);
   }
 
   // merge the toast file content
@@ -682,9 +681,9 @@ void OrcWriter::MergeGroup(OrcWriter *orc_writer, int group_index,
     if (writer_options_.need_wal) {
       std::string toast_file_name =
           writer_options_.block_id + TOAST_FILE_SUFFIX;
-      cbdb::XLogPaxInsert(writer_options_.node, toast_file_name.c_str(),
-                          current_toast_file_offset_, merge_buffer->GetBuffer(),
-                          toast_len);
+      cbdb::XLogPaxInsertReferenceData(writer_options_.node,
+                                       toast_file_name.c_str(),
+                                       current_toast_file_offset_, toast_len);
     }
   }
 
@@ -912,10 +911,9 @@ void OrcWriter::Close() {
                  buffer_mem_stream.GetDataBuffer()->Used(), file_offset);
 
   if (writer_options_.need_wal) {
-    cbdb::XLogPaxInsert(writer_options_.node, writer_options_.block_id.c_str(),
-                        file_offset,
-                        buffer_mem_stream.GetDataBuffer()->GetBuffer(),
-                        buffer_mem_stream.GetDataBuffer()->Used());
+    cbdb::XLogPaxInsertReferenceData(
+        writer_options_.node, writer_options_.block_id.c_str(), file_offset,
+        buffer_mem_stream.GetDataBuffer()->Used());
   }
 
   if (toast_mem.GetBuffer()) {
@@ -926,9 +924,9 @@ void OrcWriter::Close() {
     if (writer_options_.need_wal) {
       std::string toast_file_name =
           writer_options_.block_id + TOAST_FILE_SUFFIX;
-      cbdb::XLogPaxInsert(writer_options_.node, toast_file_name.c_str(),
-                          current_toast_file_offset_ - toast_mem.Used(),
-                          toast_mem.GetBuffer(), toast_mem.Used());
+      cbdb::XLogPaxInsertReferenceData(
+          writer_options_.node, toast_file_name.c_str(),
+          current_toast_file_offset_ - toast_mem.Used(), toast_mem.Used());
     }
   }
 

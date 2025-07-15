@@ -40,6 +40,12 @@ void XLogPaxInsert(RelFileNode node, const char *filename, int64 offset,
   CBDB_WRAP_END;
 }
 
+void XLogPaxInsertReferenceData(RelFileNode node, const char *filename, int64 offset, int32 bufferLen) {
+  CBDB_WRAP_START;
+  { paxc::XLogPaxInsertReferenceData(node, filename, offset, bufferLen); }
+  CBDB_WRAP_END;
+}
+
 void XLogPaxCreateDirectory(RelFileNode node) {
   CBDB_WRAP_START;
   { paxc::XLogPaxCreateDirectory(node); }

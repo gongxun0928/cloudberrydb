@@ -99,6 +99,9 @@ const char *pax_rmgr_identify(uint8 info) {
     case XLOG_PAX_TRUNCATE:
       id = "PAX_TRUNCATE";
       break;
+    case XLOG_PAX_INSERT_REFERENCE_DATA:
+      id = "PAX_INSERT_REFERENCE_DATA";
+      break;
     default:
       id = "PAX_UNKNOWN";
   }
