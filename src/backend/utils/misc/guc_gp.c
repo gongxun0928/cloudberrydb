@@ -106,6 +106,9 @@ static bool check_gp_interconnect_type(char **newval, void **extra, GucSource so
 static void assign_gp_interconnect_type(const char *newval, void *extra);
 static const char *show_gp_interconnect_type(void);
 
+static bool check_enable_wal_parse_record(bool *newval, void **extra, GucSource source);
+static bool check_xlog_record_index_only(bool *newval, void **extra, GucSource source);
+
 int listenerBacklog  = 128;
 
 /* For synchornized GUC value is cache in HashTable,
@@ -187,6 +190,8 @@ bool		debug_walrepl_snd = false;
 bool		debug_walrepl_syncrep = false;
 bool		debug_walrepl_rcv = false;
 bool		debug_basebackup = false;
+bool		xlog_record_index_only = false;
+bool		enable_wal_parse_record = false;
 
 int rep_lag_avoidance_threshold = 0;
 
@@ -1649,8 +1654,30 @@ struct config_bool ConfigureNamesBool_gp[] =
 			GUC_SUPERUSER_ONLY | GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
 		&debug_walrepl_snd,
-		true,
+		false,
 		NULL, NULL, NULL
+	},
+
+	{
+		{"xlog_record_index_only", PGC_SUSET, DEVELOPER_OPTIONS,
+			gettext_noop("Only write index records in WAL File."),
+			NULL,
+			GUC_SUPERUSER_ONLY
+		},
+		&xlog_record_index_only,
+		false,
+		check_xlog_record_index_only, NULL, NULL
+	},
+
+	{
+		{"enable_wal_parse_record", PGC_SUSET, DEVELOPER_OPTIONS,
+			gettext_noop("Enable parse record in walsender."),
+			NULL,
+			GUC_SUPERUSER_ONLY
+		},
+		&enable_wal_parse_record,
+		false,
+		check_enable_wal_parse_record, NULL, NULL
 	},
 
 	{
@@ -1660,7 +1687,7 @@ struct config_bool ConfigureNamesBool_gp[] =
 			GUC_SUPERUSER_ONLY | GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
 		&debug_walrepl_syncrep,
-		true,
+		false,
 		NULL, NULL, NULL
 	},
 
@@ -1671,7 +1698,7 @@ struct config_bool ConfigureNamesBool_gp[] =
 			GUC_SUPERUSER_ONLY | GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
 		&debug_walrepl_rcv,
-		true,
+		false,
 		NULL, NULL, NULL
 	},
 
@@ -5749,4 +5776,28 @@ show_gp_interconnect_type(void)
 
 	/* singlenode or GP_ROLE_UTILITY */
 	return "unknown";
+}
+
+static bool
+check_enable_wal_parse_record(bool *newval, void **extra, GucSource source)
+{
+	/* If enable_wal_parse_record is being set to false, ensure xlog_record_index_only is also false */
+	if (!*newval && xlog_record_index_only)
+	{
+		GUC_check_errmsg("enable_wal_parse_record cannot be set to false when xlog_record_index_only is true");
+		return false;
+	}
+	return true;
+}
+
+static bool
+check_xlog_record_index_only(bool *newval, void **extra, GucSource source)
+{
+	/* If xlog_record_index_only is being set to true, ensure enable_wal_parse_record is also true */
+	if (*newval && !enable_wal_parse_record)
+	{
+		GUC_check_errmsg("xlog_record_index_only cannot be set to true when enable_wal_parse_record is false");
+		return false;
+	}
+	return true;
 }

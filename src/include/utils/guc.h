@@ -338,6 +338,8 @@ extern bool gp_log_suboverflow_statement;
 extern bool debug_walrepl_snd;
 extern bool debug_walrepl_syncrep;
 extern bool debug_walrepl_rcv;
+extern bool xlog_record_index_only;
+extern bool enable_wal_parse_record;
 extern bool debug_basebackup;
 
 extern int rep_lag_avoidance_threshold;

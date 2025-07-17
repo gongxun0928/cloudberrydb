@@ -279,7 +279,6 @@ static void WalSndSegmentOpen(XLogReaderState *state, XLogSegNo nextSegNo,
 
 static void WalSndSetCaughtupWithinRange(bool catchup_within_range);
 static bool WalSndIsCatchupWithinRange(XLogRecPtr currRecPtr, XLogRecPtr catchupRecPtr);
-static void VerityPaxInsertMessage(XLogReaderState *xlogreader, XLogRecord *record);
 static void SendPaxInsertReferenceDataMessage(XLogReaderState *xlogreader, XLogRecord *record);
 
 
@@ -782,7 +781,14 @@ StartReplication(StartReplicationCmd *cmd)
 		/* Main loop of walsender */
 		replication_active = true;
 
-		WalSndLoop(XLogSendPhysicalWithRecordParsing);
+		if(enable_wal_parse_record)
+		{
+			WalSndLoop(XLogSendPhysicalWithRecordParsing);
+		}
+		else
+		{
+			WalSndLoop(XLogSendPhysical);
+		}
 
 		replication_active = false;
 		if (got_STOPPING)
@@ -3271,10 +3277,6 @@ XLogSendPhysicalWithRecordParsing(void)
 			{
 				SendPaxInsertReferenceDataMessage(xlogreader, record);
 			}
-			else if(GetPaxRecordType(xlogreader) == XLOG_PAX_INSERT)
-			{
-				VerityPaxInsertMessage(xlogreader, record);
-			}
 		}
 
 		/* Continue parsing subsequent records */
@@ -3319,10 +3321,6 @@ XLogSendPhysicalWithRecordParsing(void)
 				if(GetPaxRecordType(xlogreader) == XLOG_PAX_INSERT_REFERENCE_DATA)
 				{
 					SendPaxInsertReferenceDataMessage(xlogreader, record);
-				}
-				else if(GetPaxRecordType(xlogreader) == XLOG_PAX_INSERT)
-				{
-					VerityPaxInsertMessage(xlogreader, record);
 				}
 			}
 
@@ -3464,112 +3462,7 @@ retry:
  * This function parses the PAX INSERT WAL record and sends it as a special
  * message type 'f' to the walreceiver for immediate processing.
  */
-static void
-VerityPaxInsertMessage(XLogReaderState *xlogreader, XLogRecord *record)
-{
-	char *relpath;
-	char filepath[MAX_PATH_FILE_NAME_LEN];
-	char *path;
-	char *read_path;
-	int written_len;
-	File file; // write file
-	int fileFlags;
 
-	char *rec = XLogRecGetData(xlogreader);
-	xl_pax_insert *xlrec = (xl_pax_insert *)rec;
-
-	// in dfs mode, no wal log for pax storage
-	relpath = BuildPaxDirectoryPath(xlrec->target.node, InvalidBackendId);
-
-	Assert(xlrec->target.file_name_len < MAX_PATH_FILE_NAME_LEN);
-
-	memcpy(filepath, rec + SizeOfPAXInsert, xlrec->target.file_name_len);
-	filepath[xlrec->target.file_name_len] = '\0';
-
-	char *buffer = (char *)xlrec + SizeOfPAXInsert + xlrec->target.file_name_len;
-	int32 bufferLen =
-		XLogRecGetDataLen(xlogreader) - SizeOfPAXInsert - xlrec->target.file_name_len;
-
-	read_path = psprintf("%s/%s", relpath, filepath);
-
-	elogif(debug_walrepl_snd, INFO, "VerityPaxInsertMessage LSN: %X/%X, node: %u/%u/%u, read_path: %s, offset: %ld, bufferLen: %d",
-			(uint32) (xlogreader->ReadRecPtr >> 32), (uint32) xlogreader->ReadRecPtr,
-			xlrec->target.node.dbNode, xlrec->target.node.spcNode, xlrec->target.node.relNode,
-			read_path, xlrec->target.offset, bufferLen);
-
-	pfree(relpath);
-
-	// read data from pax file
-	int pax_file = open(read_path, O_RDONLY | PG_BINARY, 0640);
-	if (pax_file < 0)
-	{
-		elogif(debug_walrepl_snd, ERROR, "failed to open file %s", read_path);
-		return;
-	}
-
-	char *pax_buffer = (char *)malloc(bufferLen);
-	int nbytes = pread(pax_file, pax_buffer, bufferLen, xlrec->target.offset);
-	if (nbytes < 0)
-	{
-		const char *error_msg = strerror(errno);
-		elogif(debug_walrepl_snd, ERROR, "failed to read file %s, error: %s", read_path, error_msg);
-		return;
-	}
-
-	close(pax_file);
-
-	// compare the buffer with the pax_buffer
-	// if failed, write the buffer to the file
-	if (memcmp(buffer, pax_buffer, bufferLen) != 0)
-	{
-		pfree(read_path);
-		pfree(pax_buffer);
-
-		path = psprintf("%s/%s", "/tmp/pax/", filepath);
-		if (xlrec->target.offset == 0)
-		{
-			// why we need to truncate here?
-			// If the previous transaction was abnormal, the file name may be reused.
-			// If O_TRUNC is not specified, the tail of the file may be garbage data
-			// from the last wal synchronization.
-			// for example:
-			// tx1: write 1024 bytes to file, and crash
-			// tx2: write 512 bytes from offset 0 to same file, the last 512 bytes from
-			// offset 512 will be garbage data
-			fileFlags = O_RDWR | PG_BINARY | O_CREAT | O_TRUNC;
-			file = open(path, fileFlags, 0640);
-		}
-		else
-		{
-			fileFlags = O_RDWR | PG_BINARY;
-			file = open(path, fileFlags, 0640);
-		}
-
-		if (file < 0)
-		{
-			elogif(debug_walrepl_snd, ERROR, "failed to open file %s", path);
-			return;
-		}
-
-		written_len = pwrite(file, buffer, bufferLen, xlrec->target.offset);
-
-		if (written_len < 0 || written_len != bufferLen)
-		{
-			ereport(ERROR, (errcode_for_file_access(),
-							errmsg("failed to write %d bytes in file \"%s\": %m",
-								bufferLen, path)));
-		}
-
-		close(file);
-		pfree(path);
-		elogif(debug_walrepl_snd, LOG, "VerityPaxInsertMessage buffer mismatch for file %s", read_path);
-	}
-
-	elogif(debug_walrepl_snd, INFO, "VerityPaxInsertMessage buffer match for file %s", read_path);
-
-	free(pax_buffer);
-	pfree(read_path);
-}
 
 static void SendPaxInsertReferenceDataMessage(XLogReaderState *xlogreader, XLogRecord *record)
 {

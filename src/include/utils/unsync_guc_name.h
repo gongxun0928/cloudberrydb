@@ -93,6 +93,8 @@
 		"debug_resource_group",
 		"debug_walrepl_rcv",
 		"debug_walrepl_snd",
+		"xlog_record_index_only",
+		"enable_wal_parse_record",
 		"debug_walrepl_syncrep",
 		"debug_xlog_record_read",
 		"default_statistics_target",
