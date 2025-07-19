@@ -187,7 +187,7 @@ bool		debug_walrepl_snd = false;
 bool		debug_walrepl_syncrep = false;
 bool		debug_walrepl_rcv = false;
 bool		debug_basebackup = false;
-bool		enable_wal_parse_record = false;
+bool		enable_wal_parse_record = true;
 
 int rep_lag_avoidance_threshold = 0;
 
@@ -1649,17 +1649,17 @@ struct config_bool ConfigureNamesBool_gp[] =
 			GUC_SUPERUSER_ONLY | GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
 		&debug_walrepl_snd,
-		false,
+		true,
 		NULL, NULL, NULL
 	},
 	{
-		{"enable_wal_parse_record", PGC_SUSET, DEVELOPER_OPTIONS,
+		{"enable_wal_parse_record", PGC_POSTMASTER, DEVELOPER_OPTIONS,
 			gettext_noop("Enable parse record in walsender."),
 			NULL,
 			GUC_SUPERUSER_ONLY
 		},
 		&enable_wal_parse_record,
-		false,
+		true,
 		NULL, NULL, NULL
 	},
 
@@ -1681,7 +1681,7 @@ struct config_bool ConfigureNamesBool_gp[] =
 			GUC_SUPERUSER_ONLY | GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
 		&debug_walrepl_rcv,
-		false,
+		true,
 		NULL, NULL, NULL
 	},
 

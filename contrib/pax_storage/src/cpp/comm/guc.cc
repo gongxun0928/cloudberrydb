@@ -72,7 +72,6 @@ int pax_min_size_of_external_toast = PAX_MIN_SIZE_MAKE_EXTERNAL_TOAST;
 char *pax_default_storage_format = nullptr;
 int pax_bloom_filter_work_memory_bytes = PAX_BLOOM_FILTER_WORK_MEMORY_BYTES;
 bool pax_log_filter_tree = false;
-bool xlog_record_index_only = false;
 
 }  // namespace pax
 
@@ -124,17 +123,6 @@ static bool CheckDefaultStorageFormat(char **newval, void **extra,
                                       GucSource source) {
   return pg_strcasecmp(*newval, STORAGE_FORMAT_TYPE_PORC) == 0 ||
          pg_strcasecmp(*newval, STORAGE_FORMAT_TYPE_PORC_VEC) == 0;
-}
-
-static bool CheckXlogRecordIndexOnly(bool *newval, void **extra,
-                                     GucSource source) {
-  /* If xlog_record_index_only is being set to true, ensure enable_wal_parse_record is also true */
-  if (*newval && !enable_wal_parse_record)
-	{
-		GUC_check_errmsg("xlog_record_index_only cannot be set to true when enable_wal_parse_record is false");
-		return false;
-	}
-	return true;
 }
 
 void DefineGUCs() {
@@ -214,9 +202,6 @@ void DefineGUCs() {
                            &pax::pax_log_filter_tree, false, PGC_USERSET, 0,
                            NULL, NULL, NULL);
 
-  DefineCustomBoolVariable("xlog_record_index_only", "Only write index records in WAL File", NULL,
-                           &pax::xlog_record_index_only, false, PGC_USERSET, 0,
-                           CheckXlogRecordIndexOnly, NULL, NULL);
 }
 
 }  // namespace paxc

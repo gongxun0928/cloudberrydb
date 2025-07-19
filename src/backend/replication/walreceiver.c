@@ -871,7 +871,7 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len)
 	}
 	case 'f': /* PAX file message */
 	{
-		elog(DEBUG1, "Received PAX file message, length: %zu", len);
+		elog(LOG, "Received PAX file message, length: %zu", len);
 		/* Process PAX INSERT message */
 		ProcessPaxInsertMessage(buf, len);
 		break;
@@ -1316,10 +1316,10 @@ ProcessPaxInsertMessage(char *buf, Size len)
 	int64 buffer_len;
 	xl_pax_insert_reference_data *xlrec;
 	char filename[MAXFNAMELEN];
-	char *relpath;
-	char *path;
-	char *buffer;
-	int file;
+	char *relpath = NULL;
+	char *path = NULL;
+	char *buffer = NULL;
+	int file = -1;
 	int fileFlags;
 
 	/* Parse the message */
@@ -1386,13 +1386,15 @@ ProcessPaxInsertMessage(char *buf, Size len)
 	if (file < 0)
 	{
 		const char *errstr = strerror(errno);
-		elog(PANIC, "ProcessPaxInsertMessageFailed to open file %s,error %s", path, errstr);
+		elog(WARNING, "ProcessPaxInsertMessageFailed to open file %s,error %s", path, errstr);
+		goto cleanup;
 	}
 
-	if (write(file, buffer, buffer_len) < 0)
+	if (pwrite(file, buffer, buffer_len, xlrec->target.offset) < 0)
 	{
 		const char *errstr = strerror(errno);
-		elog(PANIC, "ProcessPaxInsertMessageFailed to write file %s,error %s", path, errstr);
+		elog(WARNING, "ProcessPaxInsertMessageFailed to write file %s,error %s", path, errstr);
+		goto cleanup;
 	}
 
 	elog(LOG, "ProcessPaxInsertMessageSuccessfully write %ld bytes to file %s at offset %ld",
@@ -1401,10 +1403,15 @@ ProcessPaxInsertMessage(char *buf, Size len)
 	if (close(file) < 0)
 	{
 		const char *errstr = strerror(errno);
-		elog(PANIC, "ProcessPaxInsertMessageFailed to close file %s,error %s", path, errstr);
+		elog(WARNING, "ProcessPaxInsertMessageFailed to close file %s,error %s", path, errstr);
 	}
 
-	pfree(path);
+cleanup:
+	if (file >= 0)
+		close(file);
+	if (path != NULL)
+		pfree(path);
+	pfree(message.data);
 }
 
 /*

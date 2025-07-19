@@ -279,7 +279,7 @@ static void WalSndSegmentOpen(XLogReaderState *state, XLogSegNo nextSegNo,
 
 static void WalSndSetCaughtupWithinRange(bool catchup_within_range);
 static bool WalSndIsCatchupWithinRange(XLogRecPtr currRecPtr, XLogRecPtr catchupRecPtr);
-static void SendPaxInsertReferenceDataMessage(XLogReaderState *xlogreader, XLogRecord *record);
+static size_t SendPaxInsertReferenceDataMessage(XLogReaderState *xlogreader, XLogRecord *record);
 
 
 /* Initialize walsender process before entering the main command loop */
@@ -3240,6 +3240,10 @@ XLogSendPhysicalWithRecordParsing(void)
 	 */
 	XLogRecPtr current_lsn = startptr;
 	XLogRecPtr last_complete_record_end = startptr;
+
+	/* Track total PAX message size to prevent buffer overflow */
+	size_t total_pax_message_size = 0;
+	const size_t MAX_PAX_MESSAGE_SIZE = MAX_SEND_SIZE; /* Use MAX_SEND_SIZE as limit */
 	
 	/* First, try to find the start of the next complete WAL record */
 	XLogBeginRead(xlogreader, current_lsn);
@@ -3275,13 +3279,13 @@ XLogSendPhysicalWithRecordParsing(void)
 		{
 			if(GetPaxRecordType(xlogreader) == XLOG_PAX_INSERT_REFERENCE_DATA)
 			{
-				SendPaxInsertReferenceDataMessage(xlogreader, record);
+				total_pax_message_size += SendPaxInsertReferenceDataMessage(xlogreader, record);
 			}
 		}
 
 		/* Continue parsing subsequent records */
 		current_lsn = last_complete_record_end;
-		while (current_lsn < endptr)
+		while (current_lsn < endptr && total_pax_message_size < MAX_PAX_MESSAGE_SIZE)
 		{
 			XLogBeginRead(xlogreader, current_lsn);
 			record = XLogReadRecord(xlogreader, &errm);
@@ -3320,7 +3324,7 @@ XLogSendPhysicalWithRecordParsing(void)
 			{
 				if(GetPaxRecordType(xlogreader) == XLOG_PAX_INSERT_REFERENCE_DATA)
 				{
-					SendPaxInsertReferenceDataMessage(xlogreader, record);
+					total_pax_message_size += SendPaxInsertReferenceDataMessage(xlogreader, record);
 				}
 			}
 
@@ -3464,13 +3468,17 @@ retry:
  */
 
 
-static void SendPaxInsertReferenceDataMessage(XLogReaderState *xlogreader, XLogRecord *record)
+static size_t SendPaxInsertReferenceDataMessage(XLogReaderState *xlogreader, XLogRecord *record)
 {
+	size_t total_pax_message_size = 0;
 	StringInfoData pax_message;
-	char *relpath;
+	char *relpath = NULL;
 	char filepath[MAX_PATH_FILE_NAME_LEN];
 	char	   *rec = XLogRecGetData(xlogreader);
 	xl_pax_insert_reference_data *xlrec = (xl_pax_insert_reference_data *)rec;
+	char *path = NULL;
+	char *pax_buffer = NULL;
+	int pax_file = -1;
 	
 	Assert(IsPaxRecord(xlogreader));
 	Assert(GetPaxRecordType(xlogreader) == XLOG_PAX_INSERT_REFERENCE_DATA);
@@ -3483,6 +3491,8 @@ static void SendPaxInsertReferenceDataMessage(XLogReaderState *xlogreader, XLogR
 	pq_sendint64(&pax_message, GetCurrentTimestamp());  /* send time */
 	pq_sendbytes(&pax_message, rec, SizeOfPAXInsertReferenceData);
 	pq_sendbytes(&pax_message, rec + SizeOfPAXInsertReferenceData, xlrec->target.file_name_len);
+
+	total_pax_message_size += 8+8+ SizeOfPAXInsertReferenceData + xlrec->target.file_name_len;
 	
 	relpath = (char *)BuildPaxDirectoryPath(xlrec->target.node, InvalidBackendId);
 
@@ -3491,40 +3501,53 @@ static void SendPaxInsertReferenceDataMessage(XLogReaderState *xlogreader, XLogR
 	memcpy(filepath, rec + SizeOfPAXInsertReferenceData, xlrec->target.file_name_len);
 	filepath[xlrec->target.file_name_len] = '\0';
 
-	char *path = psprintf("%s/%s", relpath, filepath);
+	path = psprintf("%s/%s", relpath, filepath);
 
-	int pax_file = open(path, O_RDONLY | PG_BINARY, 0640);
+	pax_file = open(path, O_RDONLY | PG_BINARY, 0640);
 	if (pax_file < 0)
 	{
-		elogif(debug_walrepl_snd, ERROR, "failed to open file %s", path);
-		return;
+		// TODO: the relfilenode has been dropped(TRUNCATE OR DROP TABLE), so we just skip it??
+		// maybe we should mark the relfilenode as dropped, and later check it at catchup
+		elogif(debug_walrepl_snd, WARNING, "failed to open file %s", path);
+		goto finally;
 	}
 
-	char *pax_buffer = (char *)malloc(xlrec->buffer_len);
+	elogif(debug_walrepl_snd, LOG, "sent PAX INSERT REFERENCE DATA message "
+		"LSN: %X/%X, node: %u/%u/%u, filename: %s, bufferLen: %ld",
+		(uint32) (xlogreader->ReadRecPtr >> 32), (uint32) xlogreader->ReadRecPtr,
+		xlrec->target.node.dbNode, xlrec->target.node.spcNode, xlrec->target.node.relNode,
+		filepath, xlrec->buffer_len);
+
+	pax_buffer = (char *)palloc(xlrec->buffer_len);
 	int nbytes = pread(pax_file, pax_buffer, xlrec->buffer_len, xlrec->target.offset);
 	if (nbytes < 0)
 	{
 		const char *error_msg = strerror(errno);
 		elogif(debug_walrepl_snd, ERROR, "failed to read file %s, error: %s", path, error_msg);
-		return;
+		goto finally;
 	}
 
 	Assert(nbytes == xlrec->buffer_len);
+
 	pq_sendbytes(&pax_message, pax_buffer, nbytes);
+
+	total_pax_message_size += nbytes;
 
 	//send the message as CopyData
 	pq_putmessage_noblock('d', pax_message.data, pax_message.len);
 
-	free(pax_buffer);
-	pfree(path);
-	close(pax_file);
-	
-	elogif(debug_walrepl_snd, LOG, "sent PAX INSERT REFERENCE DATA message "
-			"LSN: %X/%X, node: %u/%u/%u, filename: %s, bufferLen: %ld",
-			(uint32) (xlogreader->ReadRecPtr >> 32), (uint32) xlogreader->ReadRecPtr,
-			xlrec->target.node.dbNode, xlrec->target.node.spcNode, xlrec->target.node.relNode,
-			filepath, xlrec->buffer_len);
+finally:
+	if (pax_buffer != NULL)
+		pfree(pax_buffer);
+	if (path != NULL)
+		pfree(path);
+	if (relpath != NULL)
+		pfree(relpath);
+	if (pax_file >= 0)
+		close(pax_file);
+	pfree(pax_message.data);
 
+	return total_pax_message_size;
 }
 
 /*

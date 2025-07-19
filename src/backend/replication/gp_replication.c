@@ -12,6 +12,7 @@
  */
 #include "postgres.h"
 
+#include <time.h>
 #include "pgtime.h"
 #include "cdb/cdbvars.h"
 #include "replication/gp_replication.h"
