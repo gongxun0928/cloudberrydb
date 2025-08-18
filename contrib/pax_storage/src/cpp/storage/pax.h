@@ -130,6 +130,8 @@ class TableWriter {
   std::vector<int> bf_col_idx_;
   std::vector<std::tuple<ColumnEncoding_Kind, int>> encoding_opts_;
 
+  ColumnEncoding_Kind offsets_compress_type_;
+
   bool is_dfs_table_space_;
 };
 

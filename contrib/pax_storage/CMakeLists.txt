@@ -29,7 +29,7 @@ option(USE_PAX_CATALOG "Use manifest API, by pax impl" ON)
 
 # Build gtest options
 option(BUILD_GTEST "Build with google test" ON)
-option(BUILD_GBENCH "Build with google benchmark" OFF)
+option(BUILD_GBENCH "Build with google benchmark" ON)
 
 # Build pax tools
 option(BUILD_TOOLS "Build with pax tools" OFF)
@@ -61,7 +61,7 @@ if (PAX_USE_DEBUG)
   SET(INSTALL_GTEST OFF) # disable gtest install() target
 else()
   SET(CMAKE_BUILD_TYPE "Release")
-  SET(CMAKE_CXX_FLAGS_RELEASE "$ENV{CXXFLAGS} -O3")
+  SET(CMAKE_CXX_FLAGS_RELEASE "$ENV{CXXFLAGS} -O2 -g")
   # no need build gtest in release mode
   SET(BUILD_GTEST OFF)
 endif()

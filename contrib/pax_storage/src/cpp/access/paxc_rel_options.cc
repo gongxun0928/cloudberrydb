@@ -482,4 +482,13 @@ std::vector<std::tuple<pax::ColumnEncoding_Kind, int>> GetRelEncodingOptions(
   return encoding_opts;
 }
 
+pax::ColumnEncoding_Kind GetOffsetsCompressType(char *compress_type) {
+  for (size_t i = 0; i < lengthof(paxc::kSelfRelCompressMap); i++) {
+    if (strcmp(paxc::kSelfRelCompressMap[i].optname, compress_type) == 0) {
+      return paxc::kSelfRelCompressMap[i].kind;
+    }
+  }
+  CBDB_RAISE(cbdb::CException::kExTypeLogicError);
+}
+
 }  //  namespace cbdb

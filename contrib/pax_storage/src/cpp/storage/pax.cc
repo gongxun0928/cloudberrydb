@@ -200,8 +200,8 @@ std::unique_ptr<MicroPartitionWriter> TableWriter::CreateMicroPartitionWriter(
   options.file_name = std::move(file_path);
   options.encoding_opts = GetRelEncodingOptions();
   options.storage_format = GetStorageFormat();
-  options.offsets_encoding_opts = std::make_pair(
-      PAX_OFFSETS_DEFAULT_COMPRESSTYPE, PAX_OFFSETS_DEFAULT_COMPRESSLEVEL);
+  options.offsets_encoding_opts =
+      std::make_pair(offsets_compress_type_, PAX_DEFAULT_COMPRESSLEVEL);
   options.enable_min_max_col_idxs = GetMinMaxColumnIndexes();
   options.enable_bf_col_idxs = GetBloomFilterColumnIndexes();
 
@@ -256,13 +256,17 @@ void TableWriter::InitOptionsCaches() {
     min_max_col_idx_ = cbdb::GetMinMaxColumnIndexes(relation_);
     bf_col_idx_ = cbdb::GetBloomFilterColumnIndexes(relation_);
     encoding_opts_ = cbdb::GetRelEncodingOptions(relation_);
+    offsets_compress_type_ =
+        pax_offsets_compress_type
+            ? cbdb::GetOffsetsCompressType(pax_offsets_compress_type)
+            : ColumnEncoding_Kind_DIRECT_DELTA;
     options_cached_ = true;
   }
 }
 
 void TableWriter::Open() {
-  rel_path_ = cbdb::BuildPaxDirectoryPath(
-      relation_->rd_node, relation_->rd_backend);
+  rel_path_ =
+      cbdb::BuildPaxDirectoryPath(relation_->rd_node, relation_->rd_backend);
 
   InitOptionsCaches();
 
@@ -509,8 +513,8 @@ void TableReader::OpenFile() {
 
   if (it.GetExistToast()) {
     // must exist the file in disk
-    toast_file = file_system_->Open(it.GetFileName() + TOAST_FILE_SUFFIX,
-                                    fs::kReadMode);
+    toast_file =
+        file_system_->Open(it.GetFileName() + TOAST_FILE_SUFFIX, fs::kReadMode);
   }
 
   reader_ = MicroPartitionFileFactory::CreateMicroPartitionReader(
@@ -588,8 +592,7 @@ void TableDeleter::DeleteWithVisibilityMap(
 
   std::unique_ptr<Bitmap8> visi_bitmap;
   auto catalog_update = pax::PaxCatalogUpdater::Begin(rel_);
-  auto rel_path = cbdb::BuildPaxDirectoryPath(
-      rel_->rd_node, rel_->rd_backend);
+  auto rel_path = cbdb::BuildPaxDirectoryPath(rel_->rd_node, rel_->rd_backend);
 
   min_max_col_idxs = cbdb::GetMinMaxColumnIndexes(rel_);
   stats_updater_projection->SetColumnProjection(min_max_col_idxs,
@@ -662,11 +665,10 @@ void TableDeleter::DeleteWithVisibilityMap(
     // TODO: update stats and visimap all in one catalog update
     // Update the stats in pax aux table
     // Notice that: PAX won't update the stats in group
-    UpdateStatsInAuxTable(catalog_update, micro_partition_metadata,
-                          std::make_shared<Bitmap8>(visi_bitmap->Raw()),
-                          min_max_col_idxs,
-                          cbdb::GetBloomFilterColumnIndexes(rel_),
-                          stats_updater_projection);
+    UpdateStatsInAuxTable(
+        catalog_update, micro_partition_metadata,
+        std::make_shared<Bitmap8>(visi_bitmap->Raw()), min_max_col_idxs,
+        cbdb::GetBloomFilterColumnIndexes(rel_), stats_updater_projection);
 
     // write pg_pax_blocks_oid
     catalog_update.UpdateVisimap(block_id, visimap_file_name);

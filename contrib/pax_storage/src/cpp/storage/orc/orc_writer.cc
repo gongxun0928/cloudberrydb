@@ -127,7 +127,7 @@ static std::unique_ptr<PaxColumns> BuildColumns(
 
     if (offsets_encoding_types.first == ColumnEncoding_Kind_DEF_ENCODED) {
       // default value of offsets_stream is zstd
-      encoding_option.offsets_encode_type = ColumnEncoding_Kind_COMPRESS_ZSTD;
+      encoding_option.offsets_encode_type = ColumnEncoding_Kind_DIRECT_DELTA;
       encoding_option.offsets_compress_level = 5;
     } else {
       encoding_option.offsets_encode_type = offsets_encoding_types.first;

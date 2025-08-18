@@ -166,4 +166,5 @@ std::vector<int> GetBloomFilterColumnIndexes(Relation rel);
 std::vector<int> GetClusterColumnIndexes(Relation rel);
 std::vector<std::tuple<pax::ColumnEncoding_Kind, int>> GetRelEncodingOptions(
     Relation rel);
+pax::ColumnEncoding_Kind GetOffsetsCompressType(char *compress_type);
 }  // namespace cbdb

@@ -29,6 +29,7 @@
 
 #include "comm/cbdb_wrappers.h"
 #include "comm/fmt.h"
+#include "comm/guc.h"
 #include "comm/pax_memory.h"
 #ifdef USE_LZ4
 #include <lz4.h>
@@ -66,6 +67,24 @@ std::shared_ptr<PaxCompressor> PaxCompressor::CreateBlockCompressor(
   return compressor;
 }
 
+// ---- PaxZSTDCompressor: lifecycle and ctx-based APIs ----
+#define MT_THRESHOLD_BYTES 524288
+#define MT_WORKERS 2
+
+PaxZSTDCompressor::PaxZSTDCompressor()
+    : cctx_(ZSTD_createCCtx()), dctx_(ZSTD_createDCtx()) {}
+
+PaxZSTDCompressor::~PaxZSTDCompressor() {
+  if (cctx_) {
+    ZSTD_freeCCtx(cctx_);
+    cctx_ = nullptr;
+  }
+  if (dctx_) {
+    ZSTD_freeDCtx(dctx_);
+    dctx_ = nullptr;
+  }
+}
+
 bool PaxZSTDCompressor::ShouldAlignBuffer() const { return false; }
 
 size_t PaxZSTDCompressor::GetCompressBound(size_t src_len) {
@@ -79,8 +98,18 @@ size_t PaxZSTDCompressor::Compress(void *dst_buff, size_t dst_cap,
   Assert(dst_cap > 0);
   Assert(src_buff);
   Assert(src_len > 0);
+  Assert(cctx_ != nullptr);
 
-  return ZSTD_compress(dst_buff, dst_cap, src_buff, src_len, lvl);
+  ZSTD_CCtx_reset(cctx_, ZSTD_reset_session_only);
+  ZSTD_CCtx_setParameter(cctx_, ZSTD_c_compressionLevel, lvl);
+
+  if (src_len >= MT_THRESHOLD_BYTES) {
+    ZSTD_CCtx_setParameter(cctx_, ZSTD_c_nbWorkers, MT_WORKERS);
+  } else {
+    ZSTD_CCtx_setParameter(cctx_, ZSTD_c_nbWorkers, 0);
+  }
+
+  return ZSTD_compress2(cctx_, dst_buff, dst_cap, src_buff, src_len);
 }
 
 size_t PaxZSTDCompressor::Decompress(void *dst_buff, size_t dst_len,
@@ -89,8 +118,9 @@ size_t PaxZSTDCompressor::Decompress(void *dst_buff, size_t dst_len,
   Assert(dst_len > 0);
   Assert(src_buff);
   Assert(src_len > 0);
+  Assert(dctx_ != nullptr);
 
-  return ZSTD_decompress(dst_buff, dst_len, src_buff, src_len);
+  return ZSTD_decompressDCtx(dctx_, dst_buff, dst_len, src_buff, src_len);
 }
 
 bool PaxZSTDCompressor::IsError(size_t code) { return ZSTD_isError(code); }

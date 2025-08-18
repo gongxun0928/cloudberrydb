@@ -73,6 +73,8 @@ char *pax_default_storage_format = nullptr;
 int pax_bloom_filter_work_memory_bytes = PAX_BLOOM_FILTER_WORK_MEMORY_BYTES;
 bool pax_log_filter_tree = false;
 
+char *pax_offsets_compress_type = nullptr;
+
 }  // namespace pax
 
 namespace paxc {
@@ -123,6 +125,22 @@ static bool CheckDefaultStorageFormat(char **newval, void **extra,
                                       GucSource source) {
   return pg_strcasecmp(*newval, STORAGE_FORMAT_TYPE_PORC) == 0 ||
          pg_strcasecmp(*newval, STORAGE_FORMAT_TYPE_PORC_VEC) == 0;
+}
+
+static bool CheckOffsetsCompressType(char **newval, void **extra,
+                                     GucSource source) {
+  bool ok =
+      pg_strcasecmp(*newval, ColumnEncoding_Kind_COMPRESS_ZSTD_STR) == 0 ||
+      pg_strcasecmp(*newval, ColumnEncoding_Kind_COMPRESS_ZLIB_STR) == 0 ||
+      pg_strcasecmp(*newval, ColumnEncoding_Kind_DIRECT_DELTA_STR) == 0;
+  if (!ok) {
+    elog(WARNING,
+         "The guc pax_offsets_compress_type should be one of %s, %s, %s",
+         ColumnEncoding_Kind_COMPRESS_ZSTD_STR,
+         ColumnEncoding_Kind_COMPRESS_ZLIB_STR,
+         ColumnEncoding_Kind_DIRECT_DELTA_STR);
+  }
+  return ok;
 }
 
 void DefineGUCs() {
@@ -201,6 +219,11 @@ void DefineGUCs() {
   DefineCustomBoolVariable("pax_log_filter_tree", "Log the filter tree", NULL,
                            &pax::pax_log_filter_tree, false, PGC_USERSET, 0,
                            NULL, NULL, NULL);
+
+  DefineCustomStringVariable(
+      "pax_offsets_compress_type", "the offsets compress type", NULL,
+      &pax::pax_offsets_compress_type, ColumnEncoding_Kind_DIRECT_DELTA_STR,
+      PGC_USERSET, 0, CheckOffsetsCompressType, NULL, NULL);
 }
 
 }  // namespace paxc

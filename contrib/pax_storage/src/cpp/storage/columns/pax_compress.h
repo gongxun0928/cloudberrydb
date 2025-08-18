@@ -34,6 +34,12 @@
 #include "comm/pax_memory.h"
 #include "storage/columns/pax_encoding_utils.h"
 
+// Forward declarations for zstd contexts to avoid including zstd.h in header
+struct ZSTD_CCtx_s;
+typedef struct ZSTD_CCtx_s ZSTD_CCtx;
+struct ZSTD_DCtx_s;
+typedef struct ZSTD_DCtx_s ZSTD_DCtx;
+
 namespace pax {
 
 class PaxCompressor {
@@ -68,9 +74,9 @@ class PaxCompressor {
 
 class PaxZSTDCompressor final : public PaxCompressor {
  public:
-  PaxZSTDCompressor() = default;
+  PaxZSTDCompressor();
 
-  ~PaxZSTDCompressor() override = default;
+  ~PaxZSTDCompressor() override;
 
   bool ShouldAlignBuffer() const override;
 
@@ -85,6 +91,10 @@ class PaxZSTDCompressor final : public PaxCompressor {
   bool IsError(size_t code) override;
 
   const char *ErrorName(size_t code) override;
+
+ private:
+  ZSTD_CCtx *cctx_ = nullptr;
+  ZSTD_DCtx *dctx_ = nullptr;
 };
 
 class PaxZlibCompressor final : public PaxCompressor {
