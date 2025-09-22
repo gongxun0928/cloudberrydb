@@ -48,9 +48,38 @@ class OrcFormatReader;
 
 class OrcWriter : public MicroPartitionWriter {
  public:
+  struct ColumnOps {
+    using AppendFn = void (*)(PaxColumn *c, const char *p, size_t n) noexcept;
+    using AppendToastFn = void (*)(PaxColumn *c, const char *p,
+                                   size_t n) noexcept;
+    using AppendNullFn = void (*)(PaxColumn *c) noexcept;
+
+    bool byval = false;
+    bool is_vec = false;
+    bool is_vec_numeric = false;
+    int16 typlen = 0;
+    AppendFn append = nullptr;
+    AppendToastFn append_toast = nullptr;
+    AppendNullFn append_null = nullptr;
+
+    inline void Append(PaxColumn *c, const char *p, size_t n) const noexcept {
+      append(c, p, n);
+    }
+
+    inline void AppendToast(PaxColumn *c, const char *p, size_t n) const noexcept {
+      append_toast(c, p, n);
+    }
+
+    inline void AppendNull(PaxColumn *c) const noexcept {
+      append_null(c);
+    }
+  };
+
+ public:
   OrcWriter(const MicroPartitionWriter::WriterOptions &orc_writer_options,
             const std::vector<pax::porc::proto::Type_Kind> &column_types,
-            std::unique_ptr<File> file, std::unique_ptr<File> toast_file = nullptr);
+            std::unique_ptr<File> file,
+            std::unique_ptr<File> toast_file = nullptr);
 
   ~OrcWriter() override;
 
@@ -72,11 +101,11 @@ class OrcWriter : public MicroPartitionWriter {
 #endif
 
 #ifdef RUN_GTEST
-  // only for test
+             // only for test
   static std::unique_ptr<MicroPartitionWriter> CreateWriter(
       MicroPartitionWriter::WriterOptions options,
-      const std::vector<pax::porc::proto::Type_Kind> &column_types, std::unique_ptr<File> file,
-      std::unique_ptr<File> toast_file = nullptr) {
+      const std::vector<pax::porc::proto::Type_Kind> &column_types,
+      std::unique_ptr<File> file, std::unique_ptr<File> toast_file = nullptr) {
     std::vector<std::tuple<ColumnEncoding_Kind, int>> all_no_encoding_types;
     for (auto _ : column_types) {
       (void)_;
@@ -86,7 +115,8 @@ class OrcWriter : public MicroPartitionWriter {
 
     options.encoding_opts = all_no_encoding_types;
 
-    return std::make_unique<OrcWriter>(options, column_types, std::move(file), std::move(toast_file));
+    return std::make_unique<OrcWriter>(options, column_types, std::move(file),
+                                       std::move(toast_file));
   }
 #endif
 
@@ -122,7 +152,7 @@ class OrcWriter : public MicroPartitionWriter {
 
   // detoasted values, needs to free memory after the writing tuple
   // If exception happens, the detoasted values should not be touched.
-  std::vector<void*> detoast_memory_holder_;
+  std::vector<void *> detoast_memory_holder_;
 
   const std::vector<pax::porc::proto::Type_Kind> column_types_;
   std::unique_ptr<File> file_;
@@ -138,11 +168,15 @@ class OrcWriter : public MicroPartitionWriter {
   ::pax::porc::proto::Footer file_footer_;
   ::pax::porc::proto::PostScript post_script_;
   ::pax::MicroPartitionStats group_stats_;
+
+  std::vector<ColumnOps> ops_;
+  std::vector<PaxColumn *> col_ptrs_;
 };
 
 class OrcReader : public MicroPartitionReader {
  public:
-  explicit OrcReader(std::unique_ptr<File> file, std::unique_ptr<File> toast_file = nullptr);
+  explicit OrcReader(std::unique_ptr<File> file,
+                     std::unique_ptr<File> toast_file = nullptr);
 
   ~OrcReader() override = default;
 
@@ -158,7 +192,8 @@ class OrcReader : public MicroPartitionReader {
 
   size_t GetTupleCountsInGroup(size_t group_index) override;
 
-  std::unique_ptr<MicroPartitionReader::Group> ReadGroup(size_t group_index) override;
+  std::unique_ptr<MicroPartitionReader::Group> ReadGroup(
+      size_t group_index) override;
 
   std::unique_ptr<ColumnStatsProvider> GetGroupStatsInfo(
       size_t group_index) override;
