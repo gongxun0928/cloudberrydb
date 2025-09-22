@@ -54,7 +54,8 @@ static inline void BindOpsFor(OrcWriter::ColumnOps &op) {
     static inline void Append(PaxColumn *c, const char *p, size_t n) noexcept {
       static_cast<Derived *>(c)->Derived::Append(const_cast<char *>(p), n);
     }
-    static inline void AppendToast(PaxColumn *c, const char *p, size_t n) noexcept {
+    static inline void AppendToast(PaxColumn *c, const char *p,
+                                   size_t n) noexcept {
       static_cast<Derived *>(c)->Derived::AppendToast(const_cast<char *>(p), n);
     }
     static inline void AppendNull(PaxColumn *c) noexcept {
@@ -432,16 +433,24 @@ std::vector<std::pair<int, Datum>> OrcWriter::PrepareWriteTuple(
 
     AssertImply(attrs->attisdropped, is_null);
 
-    if (is_null || type_by_val || type_len != -1) {
+    // fast path: skip most attributes quickly
+    if (likely(type_by_val || type_len != -1 || is_null)) {
       continue;
     }
+
+    // Only access below fields on slow path
+    type_storage = attrs->attstorage;
+    tts_value = table_slot->tts_values[i];
 
     // prepare toast
     tts_value_vl = (struct varlena *)DatumGetPointer(tts_value);
 
+    // Cache toast header state
+    const bool is_comp = VARATT_IS_COMPRESSED(tts_value_vl);
+
     // Once passin toast is compress toast and datum is within the range
     // allowed by PAX, then PAX will direct store it
-    if (VARATT_IS_COMPRESSED(tts_value_vl)) {
+    if (unlikely(is_comp)) {
       auto compress_toast_extsize =
           VARDATA_COMPRESSED_GET_EXTSIZE(tts_value_vl);
 
@@ -454,12 +463,12 @@ std::vector<std::pair<int, Datum>> OrcWriter::PrepareWriteTuple(
     }
 
     save_origin_datum = false;
+    const bool is_external = VARATT_IS_EXTERNAL(tts_value_vl);
 
     // if not in required_stats_cols, then we allow datum with short header
     // Numeric always need ensure that with the 4B header, otherwise it will
     // be converted twice in the vectorization path.
-    if (required_stats_cols[i] || VARATT_IS_COMPRESSED(tts_value_vl) ||
-        VARATT_IS_EXTERNAL(tts_value_vl)
+    if (required_stats_cols[i] || is_comp || is_external
 #ifdef VEC_BUILD
         || attrs->atttypid == NUMERICOID
 #endif
@@ -475,8 +484,7 @@ std::vector<std::pair<int, Datum>> OrcWriter::PrepareWriteTuple(
       table_slot->tts_values[i] = PointerGetDatum(detoast_vl);
       detoast_memory_holder_.emplace_back(detoast_vl);
       save_origin_datum = true;
-      detoast_map.emplace_back(
-          std::pair<int, Datum>{i, PointerGetDatum(detoast_vl)});
+      detoast_map.emplace_back(i, PointerGetDatum(detoast_vl));
     }
 
     if (pax_enable_toast && type_storage != TYPSTORAGE_PLAIN) {
@@ -495,8 +503,7 @@ std::vector<std::pair<int, Datum>> OrcWriter::PrepareWriteTuple(
       }
     }
 
-    if (save_origin_datum)
-      origin_datum_holder_.emplace_back(std::pair<int, Datum>{i, tts_value});
+    if (save_origin_datum) origin_datum_holder_.emplace_back(i, tts_value);
   }
 
   return detoast_map;
@@ -575,7 +582,7 @@ void OrcWriter::WriteTuple(TupleTableSlot *table_slot) {
           } else {
             if (VARATT_IS_PAX_SUPPORT_TOAST(tts_value_vl)) {
               op.AppendToast(col, reinterpret_cast<char *>(tts_value_vl),
-                              PAX_VARSIZE_ANY(tts_value_vl));
+                             PAX_VARSIZE_ANY(tts_value_vl));
             } else {
               op.Append(col, VARDATA_ANY(tts_value_vl),
                         VARSIZE_ANY_EXHDR(tts_value_vl));
@@ -584,7 +591,7 @@ void OrcWriter::WriteTuple(TupleTableSlot *table_slot) {
         } else {
           if (VARATT_IS_PAX_SUPPORT_TOAST(tts_value_vl)) {
             op.AppendToast(col, reinterpret_cast<char *>(tts_value_vl),
-                            PAX_VARSIZE_ANY(tts_value_vl));
+                           PAX_VARSIZE_ANY(tts_value_vl));
           } else {
             op.Append(col, reinterpret_cast<char *>(tts_value_vl),
                       VARSIZE_ANY(tts_value_vl));
