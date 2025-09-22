@@ -46,6 +46,27 @@
 
 namespace pax {
 
+// helper: bind the non-virtual call wrapper of ColumnOps for the specified
+// derived type
+template <typename Derived>
+static inline void BindOpsFor(OrcWriter::ColumnOps &op) {
+  struct ColumnInvoker {
+    static inline void Append(PaxColumn *c, const char *p, size_t n) noexcept {
+      static_cast<Derived *>(c)->Derived::Append(const_cast<char *>(p), n);
+    }
+    static inline void AppendToast(PaxColumn *c, const char *p, size_t n) noexcept {
+      static_cast<Derived *>(c)->Derived::AppendToast(const_cast<char *>(p), n);
+    }
+    static inline void AppendNull(PaxColumn *c) noexcept {
+      static_cast<Derived *>(c)->Derived::AppendNull();
+    }
+  };
+
+  op.append = &ColumnInvoker::Append;
+  op.append_toast = &ColumnInvoker::AppendToast;
+  op.append_null = &ColumnInvoker::AppendNull;
+}
+
 std::vector<pax::porc::proto::Type_Kind> OrcWriter::BuildSchema(TupleDesc desc,
                                                                 bool is_vec) {
   std::vector<pax::porc::proto::Type_Kind> type_kinds;
@@ -104,13 +125,28 @@ static std::unique_ptr<PaxColumns> BuildColumns(
     const std::vector<pax::porc::proto::Type_Kind> &types, const TupleDesc desc,
     const std::vector<std::tuple<ColumnEncoding_Kind, int>>
         &column_encoding_types,
-    const PaxStorageFormat &storage_format) {
+    const PaxStorageFormat &storage_format,
+    std::vector<OrcWriter::ColumnOps> *out_ops /*=nullptr*/,
+    std::vector<PaxColumn *> *out_col_ptrs /*=nullptr*/) {
+  // bind the derived type to the wrapper function of ColumnOps, use the
+  // qualified name to avoid virtual dispatch
+  auto bind_common = [&](OrcWriter::ColumnOps &op,
+                         const FormData_pg_attribute *attr, bool is_vec_flag) {
+    op.typlen = attr->attlen;
+    op.byval = attr->attbyval;
+    op.is_vec = is_vec_flag;
+    op.is_vec_numeric = (is_vec_flag && attr->atttypid == NUMERICOID);
+  };
+
   std::unique_ptr<PaxColumns> columns;
   bool is_vec;
 
   columns = std::make_unique<PaxColumns>();
   is_vec = (storage_format == PaxStorageFormat::kTypeStoragePorcVec);
   columns->SetStorageFormat(storage_format);
+
+  if (out_ops) out_ops->assign(types.size(), {});
+  if (out_col_ptrs) out_col_ptrs->assign(types.size(), nullptr);
 
   for (size_t i = 0; i < types.size();
        i++) {  // already checked types.size() == desc->nattrs
@@ -134,13 +170,20 @@ static std::unique_ptr<PaxColumns> BuildColumns(
               traits::ColumnOptCreateTraits2<PaxVecNonFixedEncodingColumn>::
                   create_encoding(DEFAULT_CAPACITY, DEFAULT_CAPACITY,
                                   std::move(encoding_option));
-
+          if (out_ops && out_col_ptrs) {
+            bind_common((*out_ops)[i], attr, is_vec);
+            BindOpsFor<PaxVecNonFixedEncodingColumn>((*out_ops)[i]);
+          }
         } else {
           column = traits::ColumnOptCreateTraits2<
               PaxNonFixedEncodingColumn>::create_encoding(DEFAULT_CAPACITY,
                                                           DEFAULT_CAPACITY,
                                                           std::move(
                                                               encoding_option));
+          if (out_ops && out_col_ptrs) {
+            bind_common((*out_ops)[i], attr, is_vec);
+            BindOpsFor<PaxNonFixedEncodingColumn>((*out_ops)[i]);
+          }
         }
 
         break;
@@ -150,11 +193,22 @@ static std::unique_ptr<PaxColumns> BuildColumns(
         column =
             traits::ColumnOptCreateTraits2<PaxVecNoHdrColumn>::create_encoding(
                 DEFAULT_CAPACITY, DEFAULT_CAPACITY, std::move(encoding_option));
+        if (out_ops && out_col_ptrs) {
+          bind_common((*out_ops)[i], attr, is_vec);
+          BindOpsFor<PaxVecNoHdrColumn>((*out_ops)[i]);
+        }
         break;
       }
       case (pax::porc::proto::Type_Kind::Type_Kind_VECBPCHAR):
       case (pax::porc::proto::Type_Kind::Type_Kind_BPCHAR): {
         column = CreateBpCharColumn(is_vec, std::move(encoding_option));
+        if (out_ops && out_col_ptrs) {
+          bind_common((*out_ops)[i], attr, is_vec);
+          if (is_vec)
+            BindOpsFor<PaxVecBpCharColumn>((*out_ops)[i]);
+          else
+            BindOpsFor<PaxBpCharColumn>((*out_ops)[i]);
+        }
         break;
       }
       case (pax::porc::proto::Type_Kind::Type_Kind_VECDECIMAL):
@@ -164,22 +218,64 @@ static std::unique_ptr<PaxColumns> BuildColumns(
         AssertImply(!is_vec,
                     type == pax::porc::proto::Type_Kind::Type_Kind_DECIMAL);
         column = CreateDecimalColumn(is_vec, std::move(encoding_option));
+        if (out_ops && out_col_ptrs) {
+          bind_common((*out_ops)[i], attr, is_vec);
+          if (is_vec)
+            BindOpsFor<PaxShortNumericColumn>((*out_ops)[i]);
+          else
+            BindOpsFor<PaxPgNumericColumn>((*out_ops)[i]);
+        }
         break;
       }
       case (pax::porc::proto::Type_Kind::Type_Kind_BOOLEAN):
         column = CreateBitPackedColumn(is_vec, std::move(encoding_option));
+        if (out_ops && out_col_ptrs) {
+          bind_common((*out_ops)[i], attr, is_vec);
+          if (is_vec)
+            BindOpsFor<PaxVecBitPackedColumn>((*out_ops)[i]);
+          else
+            BindOpsFor<PaxBitPackedColumn>((*out_ops)[i]);
+        }
         break;
       case (pax::porc::proto::Type_Kind::Type_Kind_BYTE):  // len 1 integer
         column = CreateCommColumn<int8>(is_vec, std::move(encoding_option));
+        if (out_ops && out_col_ptrs) {
+          bind_common((*out_ops)[i], attr, is_vec);
+          if (is_vec)
+            BindOpsFor<PaxVecEncodingColumn<int8>>((*out_ops)[i]);
+          else
+            BindOpsFor<PaxEncodingColumn<int8>>((*out_ops)[i]);
+        }
         break;
       case (pax::porc::proto::Type_Kind::Type_Kind_SHORT):  // len 2 integer
         column = CreateCommColumn<int16>(is_vec, std::move(encoding_option));
+        if (out_ops && out_col_ptrs) {
+          bind_common((*out_ops)[i], attr, is_vec);
+          if (is_vec)
+            BindOpsFor<PaxVecEncodingColumn<int16>>((*out_ops)[i]);
+          else
+            BindOpsFor<PaxEncodingColumn<int16>>((*out_ops)[i]);
+        }
         break;
       case (pax::porc::proto::Type_Kind::Type_Kind_INT):  // len 4 integer
         column = CreateCommColumn<int32>(is_vec, std::move(encoding_option));
+        if (out_ops && out_col_ptrs) {
+          bind_common((*out_ops)[i], attr, is_vec);
+          if (is_vec)
+            BindOpsFor<PaxVecEncodingColumn<int32>>((*out_ops)[i]);
+          else
+            BindOpsFor<PaxEncodingColumn<int32>>((*out_ops)[i]);
+        }
         break;
       case (pax::porc::proto::Type_Kind::Type_Kind_LONG):  // len 8 integer
         column = CreateCommColumn<int64>(is_vec, std::move(encoding_option));
+        if (out_ops && out_col_ptrs) {
+          bind_common((*out_ops)[i], attr, is_vec);
+          if (is_vec)
+            BindOpsFor<PaxVecEncodingColumn<int64>>((*out_ops)[i]);
+          else
+            BindOpsFor<PaxEncodingColumn<int64>>((*out_ops)[i]);
+        }
         break;
       default:
         CBDB_RAISE(cbdb::CException::ExType::kExTypeLogicError,
@@ -208,6 +304,7 @@ static std::unique_ptr<PaxColumns> BuildColumns(
     }
 
     column->SetAlignSize(align_size);
+    if (out_col_ptrs) (*out_col_ptrs)[i] = column.get();
     columns->Append(std::move(column));
   }
 
@@ -233,9 +330,9 @@ OrcWriter::OrcWriter(
   Assert(writer_options.rel_tuple_desc->natts ==
          static_cast<int>(column_types.size()));
 
-  pax_columns_ =
-      BuildColumns(column_types_, writer_options.rel_tuple_desc,
-                   writer_options.encoding_opts, writer_options.storage_format);
+  pax_columns_ = BuildColumns(column_types_, writer_options.rel_tuple_desc,
+                              writer_options.encoding_opts,
+                              writer_options.storage_format, &ops_, &col_ptrs_);
 
   summary_.rel_oid = writer_options.rel_oid;
   summary_.block_id = writer_options.block_id;
@@ -289,9 +386,10 @@ void OrcWriter::Flush() {
       }
     }
 
-    new_columns = BuildColumns(column_types_, writer_options_.rel_tuple_desc,
-                               writer_options_.encoding_opts,
-                               writer_options_.storage_format);
+    new_columns =
+        BuildColumns(column_types_, writer_options_.rel_tuple_desc,
+                     writer_options_.encoding_opts,
+                     writer_options_.storage_format, &ops_, &col_ptrs_);
 
     for (size_t i = 0; i < column_types_.size(); ++i) {
       auto old_column = (*pax_columns_)[i].get();
@@ -406,20 +504,13 @@ std::vector<std::pair<int, Datum>> OrcWriter::PrepareWriteTuple(
 
 void OrcWriter::WriteTuple(TupleTableSlot *table_slot) {
   int natts;
-  TupleDesc tuple_desc;
-  int16 type_len;
-  bool type_by_val;
-  bool is_null;
-  Datum tts_value;
+  const auto &tuple_desc = writer_options_.rel_tuple_desc;
+  Assert(tuple_desc);
   struct varlena *tts_value_vl = nullptr;
 
   SIMPLE_FAULT_INJECTOR("orc_writer_write_tuple");
 
   auto detoast_map = PrepareWriteTuple(table_slot);
-
-  // The reason why
-  tuple_desc = writer_options_.rel_tuple_desc;
-  Assert(tuple_desc);
 
   SetTupleOffset(&table_slot->tts_tid, row_index_++);
   natts = tuple_desc->natts;
@@ -432,42 +523,39 @@ void OrcWriter::WriteTuple(TupleTableSlot *table_slot) {
           pax_columns_->GetColumns(), natts, file_->DebugString().c_str()));
 
   for (int i = 0; i < natts; i++) {
-    type_len = tuple_desc->attrs[i].attlen;
-    type_by_val = tuple_desc->attrs[i].attbyval;
-    is_null = table_slot->tts_isnull[i];
-    tts_value = table_slot->tts_values[i];
+    const auto &is_null = table_slot->tts_isnull[i];
+    const auto &tts_value = table_slot->tts_values[i];
 
     AssertImply(tuple_desc->attrs[i].attisdropped, is_null);
 
+    auto *col = col_ptrs_[i];
+    const auto &op = ops_[i];
+
     if (is_null) {
-      (*pax_columns_)[i]->AppendNull();
+      op.AppendNull(col);
       continue;
     }
 
-    if (type_by_val) {
-      switch (type_len) {
+    if (op.byval) {
+      switch (op.typlen) {
         case 1: {
           auto value = cbdb::DatumToInt8(tts_value);
-          (*pax_columns_)[i]->Append(reinterpret_cast<char *>(&value),
-                                     type_len);
+          op.Append(col, reinterpret_cast<char *>(&value), 1);
           break;
         }
         case 2: {
           auto value = cbdb::DatumToInt16(tts_value);
-          (*pax_columns_)[i]->Append(reinterpret_cast<char *>(&value),
-                                     type_len);
+          op.Append(col, reinterpret_cast<char *>(&value), 2);
           break;
         }
         case 4: {
           auto value = cbdb::DatumToInt32(tts_value);
-          (*pax_columns_)[i]->Append(reinterpret_cast<char *>(&value),
-                                     type_len);
+          op.Append(col, reinterpret_cast<char *>(&value), 4);
           break;
         }
         case 8: {
           auto value = cbdb::DatumToInt64(tts_value);
-          (*pax_columns_)[i]->Append(reinterpret_cast<char *>(&value),
-                                     type_len);
+          op.Append(col, reinterpret_cast<char *>(&value), 8);
           break;
         }
         default:
@@ -475,47 +563,37 @@ void OrcWriter::WriteTuple(TupleTableSlot *table_slot) {
                   "1, 2, 4, or 8 ");
       }
     } else {
-      switch (type_len) {
-        case -1: {
-          tts_value_vl = (struct varlena *)DatumGetPointer(tts_value);
-          if (COLUMN_STORAGE_FORMAT_IS_VEC(pax_columns_)) {
-            // NUMERIC requires a complete Datum
-            // It won't get a toast
-            if (tuple_desc->attrs[i].atttypid == NUMERICOID) {
-              Assert((*pax_columns_)[i]->GetPaxColumnTypeInMem() ==
-                     PaxColumnTypeInMem::kTypeVecDecimal);
-              Assert(!VARATT_IS_PAX_SUPPORT_TOAST(tts_value_vl));
-              (*pax_columns_)[i]->Append(reinterpret_cast<char *>(tts_value_vl),
-                                         VARSIZE_ANY(tts_value_vl));
-
-            } else {
-              if (VARATT_IS_PAX_SUPPORT_TOAST(tts_value_vl)) {
-                (*pax_columns_)[i]->AppendToast(
-                    reinterpret_cast<char *>(tts_value_vl),
-                    PAX_VARSIZE_ANY(tts_value_vl));
-              } else {
-                (*pax_columns_)[i]->Append(VARDATA_ANY(tts_value_vl),
-                                           VARSIZE_ANY_EXHDR(tts_value_vl));
-              }
-            }
+      if (op.typlen == -1) {
+        tts_value_vl = (struct varlena *)DatumGetPointer(tts_value);
+        if (op.is_vec) {
+          if (op.is_vec_numeric) {
+            Assert(col->GetPaxColumnTypeInMem() ==
+                   PaxColumnTypeInMem::kTypeVecDecimal);
+            Assert(!VARATT_IS_PAX_SUPPORT_TOAST(tts_value_vl));
+            op.Append(col, reinterpret_cast<char *>(tts_value_vl),
+                      VARSIZE_ANY(tts_value_vl));
           } else {
             if (VARATT_IS_PAX_SUPPORT_TOAST(tts_value_vl)) {
-              (*pax_columns_)[i]->AppendToast(
-                  reinterpret_cast<char *>(tts_value_vl),
-                  PAX_VARSIZE_ANY(tts_value_vl));
+              op.AppendToast(col, reinterpret_cast<char *>(tts_value_vl),
+                              PAX_VARSIZE_ANY(tts_value_vl));
             } else {
-              (*pax_columns_)[i]->Append(reinterpret_cast<char *>(tts_value_vl),
-                                         VARSIZE_ANY(tts_value_vl));
+              op.Append(col, VARDATA_ANY(tts_value_vl),
+                        VARSIZE_ANY_EXHDR(tts_value_vl));
             }
           }
-
-          break;
+        } else {
+          if (VARATT_IS_PAX_SUPPORT_TOAST(tts_value_vl)) {
+            op.AppendToast(col, reinterpret_cast<char *>(tts_value_vl),
+                            PAX_VARSIZE_ANY(tts_value_vl));
+          } else {
+            op.Append(col, reinterpret_cast<char *>(tts_value_vl),
+                      VARSIZE_ANY(tts_value_vl));
+          }
         }
-        default:
-          Assert(type_len > 0);
-          (*pax_columns_)[i]->Append(
-              static_cast<char *>(cbdb::DatumToPointer(tts_value)), type_len);
-          break;
+      } else {
+        Assert(op.typlen > 0);
+        op.Append(col, static_cast<char *>(cbdb::DatumToPointer(tts_value)),
+                  op.typlen);
       }
     }
   }
