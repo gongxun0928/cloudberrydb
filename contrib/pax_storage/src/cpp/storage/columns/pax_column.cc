@@ -111,7 +111,7 @@ void PaxColumn::AppendToast(char *buffer, size_t size) {
 }
 
 void PaxColumn::Append(char * /*buffer*/, size_t /*size*/) {
-  if (null_bitmap_) null_bitmap_->Set(total_rows_);
+  if (null_bitmap_) null_bitmap_->Raw().Set(total_rows_);
   ++total_rows_;
   ++non_null_rows_;
 }
@@ -231,10 +231,7 @@ void PaxCommColumn<T>::Append(char *buffer, size_t size) {
   // bulk insert push to mirco partition?
   Assert(size == sizeof(T));
   Assert(data_->Capacity() >= sizeof(T));
-
-  if (data_->Available() == 0) {
-    data_->ReSize(data_->Used() + size, 2);
-  }
+  Assert(data_->Available() >= sizeof(T));
 
   data_->Write(buffer_t, sizeof(T));
   data_->Brush(sizeof(T));
