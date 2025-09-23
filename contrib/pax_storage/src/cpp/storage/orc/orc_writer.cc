@@ -420,7 +420,6 @@ std::vector<std::pair<int, Datum>> OrcWriter::PrepareWriteTuple(
 
   tuple_desc = writer_options_.rel_tuple_desc;
   Assert(tuple_desc);
-  const auto &required_stats_cols = group_stats_.GetRequiredStatsColsMask();
 
   for (int i = 0; i < tuple_desc->natts; i++) {
     bool save_origin_datum;
@@ -468,7 +467,7 @@ std::vector<std::pair<int, Datum>> OrcWriter::PrepareWriteTuple(
     // if not in required_stats_cols, then we allow datum with short header
     // Numeric always need ensure that with the 4B header, otherwise it will
     // be converted twice in the vectorization path.
-    if (required_stats_cols[i] || is_comp || is_external
+    if (is_comp || is_external
 #ifdef VEC_BUILD
         || attrs->atttypid == NUMERICOID
 #endif
@@ -609,8 +608,6 @@ void OrcWriter::WriteTuple(TupleTableSlot *table_slot) {
   pax_columns_->AddRows(1);
   for (const auto &pair : detoast_map)
     table_slot->tts_values[pair.first] = pair.second;
-
-  group_stats_.AddRow(table_slot);
 
   EndWriteTuple(table_slot);
 }
@@ -894,27 +891,24 @@ bool OrcWriter::WriteStripe(BufferedOutputStream *buffer_mem_stream,
     auto col_stats = stats_info->columnstats(static_cast<int>(i));
     auto pax_column = (*pax_columns)[i].get();
 
-    Assert(col_stats.hasnull() == pax_column->HasNull());
-    Assert(col_stats.allnull() == pax_column->AllNull());
-
     *stripe_footer.add_pax_col_encodings() = encoding_kinds[i];
 
     pb_stats->set_hastoast(pax_column->ToastCounts() > 0);
-    pb_stats->set_hasnull(col_stats.hasnull());
-    pb_stats->set_allnull(col_stats.allnull());
-    pb_stats->set_nonnullrows(col_stats.nonnullrows());
+    pb_stats->set_hasnull(pax_column->HasNull());
+    pb_stats->set_allnull(pax_column->AllNull());
+    pb_stats->set_nonnullrows(pax_column->GetNonNullRows());
     if (col_stats.has_bloomfilterinfo())
       *pb_stats->mutable_bloomfilterinfo() = col_stats.bloomfilterinfo();
     if (col_stats.has_columnbfstats())
       *pb_stats->mutable_columnbfstats() = col_stats.columnbfstats();
     *pb_stats->mutable_coldatastats() = col_stats.datastats();
-    PAX_LOG_IF(pax_enable_debug,
-               "write group[%lu](allnull=%s, hasnull=%s, nonnullrows=%lu, "
-               "hastoast=%s, nrows=%lu)",
-               i, BOOL_TOSTRING(col_stats.allnull()),
-               BOOL_TOSTRING(col_stats.hasnull()), col_stats.nonnullrows(),
-               BOOL_TOSTRING(pax_column->ToastCounts() > 0),
-               pax_column->GetRows());
+    PAX_LOG_IF(
+        pax_enable_debug,
+        "write group[%lu](allnull=%s, hasnull=%s, nonnullrows=%lu, "
+        "hastoast=%s, nrows=%lu)",
+        i, BOOL_TOSTRING(pax_column->AllNull()),
+        BOOL_TOSTRING(pax_column->HasNull()), pax_column->GetNonNullRows(),
+        BOOL_TOSTRING(pax_column->ToastCounts() > 0), pax_column->GetRows());
   }
 
   stripe_stats->Reset();
