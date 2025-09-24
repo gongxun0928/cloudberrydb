@@ -196,6 +196,23 @@ struct varlena *PgDeToastDatum(struct varlena *datum);
 
 struct varlena *PgDeToastDatumPacked(struct varlena *datum);
 
+inline struct varlena *VarlenaShortTo4B(const struct varlena *attr) {
+  if (attr == nullptr)
+    return nullptr;
+
+  Size data_size = VARSIZE_SHORT(attr) - VARHDRSZ_SHORT;
+  Size new_size = data_size + VARHDRSZ;
+
+  struct varlena *new_attr =
+      reinterpret_cast<struct varlena *>(std::malloc(new_size));
+  if (new_attr == nullptr)
+    return nullptr;
+
+  SET_VARSIZE(new_attr, new_size);
+  std::memcpy(VARDATA(new_attr), VARDATA_SHORT(attr), data_size);
+  return new_attr;
+}
+
 bool TupleIsValid(HeapTuple tupcache);
 
 void ReleaseTupleCache(HeapTuple tupcache);
