@@ -58,6 +58,8 @@ class OrcWriter : public MicroPartitionWriter {
     bool is_vec = false;
     bool is_vec_numeric = false;
     int16 typlen = 0;
+    char attstorage = 0;
+    uint32 atttypid = 0;
     AppendFn append = nullptr;
     AppendToastFn append_toast = nullptr;
     AppendNullFn append_null = nullptr;
@@ -171,6 +173,9 @@ class OrcWriter : public MicroPartitionWriter {
 
   std::vector<ColumnOps> ops_;
   std::vector<PaxColumn *> col_ptrs_;
+  // Indices of columns that are varlena and may require detoast/toast handling
+  // i.e., (!byval && typlen == -1) and (attstorage != TYPSTORAGE_PLAIN || is_vec_numeric)
+  std::vector<int> varlena_slowpath_indices_;
 };
 
 class OrcReader : public MicroPartitionReader {

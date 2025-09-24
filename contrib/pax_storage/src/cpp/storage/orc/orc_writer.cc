@@ -137,6 +137,8 @@ static std::unique_ptr<PaxColumns> BuildColumns(
     op.byval = attr->attbyval;
     op.is_vec = is_vec_flag;
     op.is_vec_numeric = (is_vec_flag && attr->atttypid == NUMERICOID);
+    op.attstorage = attr->attstorage;
+    op.atttypid = static_cast<uint32>(attr->atttypid);
   };
 
   std::unique_ptr<PaxColumns> columns;
@@ -335,6 +337,16 @@ OrcWriter::OrcWriter(
                               writer_options.encoding_opts,
                               writer_options.storage_format, &ops_, &col_ptrs_);
 
+  // Precompute slowpath indices for varlena columns
+  varlena_slowpath_indices_.clear();
+  varlena_slowpath_indices_.reserve(ops_.size());
+  for (size_t idx = 0; idx < ops_.size(); ++idx) {
+    const auto &op = ops_[idx];
+    if (!op.byval && op.typlen == -1) {
+      varlena_slowpath_indices_.push_back(static_cast<int>(idx));
+    }
+  }
+
   summary_.rel_oid = writer_options.rel_oid;
   summary_.block_id = writer_options.block_id;
   summary_.file_name = writer_options.file_name;
@@ -347,6 +359,12 @@ OrcWriter::OrcWriter(
 
   group_stats_.Initialize(writer_options.enable_min_max_col_idxs,
                           writer_options.enable_bf_col_idxs);
+
+  // Pre-reserve hot vectors to avoid frequent reallocations in hot path
+  const int reserve_natts = writer_options.rel_tuple_desc->natts;
+  origin_datum_holder_.reserve(reserve_natts);
+  toast_memory_holder_.reserve(reserve_natts);
+  detoast_memory_holder_.reserve(reserve_natts);
 }
 
 OrcWriter::~OrcWriter() {}
@@ -409,37 +427,25 @@ void OrcWriter::Flush() {
 
 std::vector<std::pair<int, Datum>> OrcWriter::PrepareWriteTuple(
     TupleTableSlot *table_slot) {
-  TupleDesc tuple_desc;
-  int16 type_len;
-  bool type_by_val;
-  bool is_null;
-  Datum tts_value;
-  char type_storage;
   struct varlena *tts_value_vl = nullptr, *detoast_vl = nullptr;
   std::vector<std::pair<int, Datum>> detoast_map;
 
-  tuple_desc = writer_options_.rel_tuple_desc;
-  Assert(tuple_desc);
+  // Fast path: only consider varlena columns; others are no-ops here
+  auto *values = table_slot->tts_values;
+  auto *isnull = table_slot->tts_isnull;
 
-  for (int i = 0; i < tuple_desc->natts; i++) {
-    bool save_origin_datum;
-    auto attrs = TupleDescAttr(tuple_desc, i);
-    type_len = attrs->attlen;
-    type_by_val = attrs->attbyval;
-    is_null = table_slot->tts_isnull[i];
-    tts_value = table_slot->tts_values[i];
-    type_storage = attrs->attstorage;
-
-    AssertImply(attrs->attisdropped, is_null);
-
-    // fast path: skip most attributes quickly
-    if (likely(type_by_val || type_len != -1 || is_null)) {
+  for (int i : varlena_slowpath_indices_) {
+    if (isnull[i]) {
       continue;
     }
 
-    // Only access below fields on slow path
-    type_storage = attrs->attstorage;
-    tts_value = table_slot->tts_values[i];
+    bool save_origin_datum = false;
+    const auto &op = ops_[i];
+    Datum tts_value = values[i];
+
+    // Keep dropped-attribute assertion behavior
+    AssertImply(TupleDescAttr(writer_options_.rel_tuple_desc, i)->attisdropped,
+                isnull[i]);
 
     // prepare toast
     tts_value_vl = (struct varlena *)DatumGetPointer(tts_value);
@@ -447,13 +453,12 @@ std::vector<std::pair<int, Datum>> OrcWriter::PrepareWriteTuple(
     // Cache toast header state
     const bool is_comp = VARATT_IS_COMPRESSED(tts_value_vl);
 
-    // Once passin toast is compress toast and datum is within the range
-    // allowed by PAX, then PAX will direct store it
+    // If the input toast is compressed and within PAX in-place range, skip
     if (unlikely(is_comp)) {
       auto compress_toast_extsize =
           VARDATA_COMPRESSED_GET_EXTSIZE(tts_value_vl);
 
-      if (type_storage != TYPSTORAGE_PLAIN &&
+      if (op.attstorage != TYPSTORAGE_PLAIN &&
           !VARATT_CAN_MAKE_PAX_EXTERNAL_TOAST_BY_SIZE(compress_toast_extsize) &&
           VARATT_CAN_MAKE_PAX_COMPRESSED_TOAST_BY_SIZE(
               compress_toast_extsize)) {
@@ -461,15 +466,12 @@ std::vector<std::pair<int, Datum>> OrcWriter::PrepareWriteTuple(
       }
     }
 
-    save_origin_datum = false;
     const bool is_external = VARATT_IS_EXTERNAL(tts_value_vl);
 
-    // if not in required_stats_cols, then we allow datum with short header
-    // Numeric always need ensure that with the 4B header, otherwise it will
-    // be converted twice in the vectorization path.
+    // Numeric in vector mode must ensure 4B header to avoid double convert
     if (is_comp || is_external
 #ifdef VEC_BUILD
-        || attrs->atttypid == NUMERICOID
+        || op.atttypid == NUMERICOID
 #endif
     ) {
       // still detoast the origin toast
@@ -480,24 +482,24 @@ std::vector<std::pair<int, Datum>> OrcWriter::PrepareWriteTuple(
     }
 
     if (tts_value_vl != detoast_vl) {
-      table_slot->tts_values[i] = PointerGetDatum(detoast_vl);
+      values[i] = PointerGetDatum(detoast_vl);
       detoast_memory_holder_.emplace_back(detoast_vl);
       save_origin_datum = true;
       detoast_map.emplace_back(i, PointerGetDatum(detoast_vl));
     }
 
-    if (pax_enable_toast && type_storage != TYPSTORAGE_PLAIN) {
+    if (pax_enable_toast && op.attstorage != TYPSTORAGE_PLAIN) {
       Datum pax_toast_datum;
       // only make toast here
       std::shared_ptr<MemoryObject> mobj = nullptr;
 
       std::tie(pax_toast_datum, mobj) =
-          pax_make_toast(PointerGetDatum(detoast_vl), type_storage);
+          pax_make_toast(PointerGetDatum(detoast_vl), op.attstorage);
 
       if (mobj) {
         Assert(pax_toast_datum != 0);
         toast_memory_holder_.emplace_back(std::move(mobj));
-        table_slot->tts_values[i] = pax_toast_datum;
+        values[i] = pax_toast_datum;
         save_origin_datum = true;
       }
     }
