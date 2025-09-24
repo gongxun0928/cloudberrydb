@@ -83,8 +83,7 @@ size_t PaxColumn::GetRangeNonNullRows(size_t start_pos, size_t len) {
 
 void PaxColumn::CreateNulls(size_t cap) {
   Assert(!null_bitmap_);
-  null_bitmap_ = std::make_unique<Bitmap8>(cap);
-  null_bitmap_->SetN(total_rows_);
+  null_bitmap_ = std::make_unique<Bitmap8>(cap, 0xff);
 }
 
 void PaxColumn::AppendNull() {
@@ -111,7 +110,6 @@ void PaxColumn::AppendToast(char *buffer, size_t size) {
 }
 
 void PaxColumn::Append(char * /*buffer*/, size_t /*size*/) {
-  if (null_bitmap_) null_bitmap_->Raw().Set(total_rows_);
   ++total_rows_;
   ++non_null_rows_;
 }

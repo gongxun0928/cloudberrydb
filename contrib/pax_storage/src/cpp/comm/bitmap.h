@@ -67,6 +67,12 @@ struct BitmapRaw final {
     AssertImply(size > 0, bitmap);
     if (size > 0) memset(&bitmap[0], 0, sizeof(T) * size);
   }
+
+  inline void SetAll() {
+    AssertImply(size > 0, bitmap);
+    if (size > 0) memset(&bitmap[0], -1, sizeof(T) * size);
+  }
+
   inline bool Test(uint32 index) const {
     return (bitmap[BM_INDEX_WORD_OFF(index)] & BM_INDEX_BIT(index)) != 0;
   }
@@ -160,13 +166,13 @@ struct BitmapRaw final {
 template <typename T>
 class BitmapTpl final {
  public:
-  using BitmapMemoryPolicy = void (*)(BitmapRaw<T> &, uint32);
-  explicit BitmapTpl(uint32 initial_size = 16) {
+  using BitmapMemoryPolicy = void (*)(BitmapRaw<T> &, uint32, uint8);
+  explicit BitmapTpl(uint32 initial_size = 16, uint8 init_value = 0) {
     static_assert(sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 ||
                   sizeof(T) == 8);
     static_assert(BM_WORD_BITS == (1 << BM_WORD_SHIFTS));
     policy_ = DefaultBitmapMemoryPolicy;
-    policy_(raw_, Max(initial_size, 16));
+    policy_(raw_, Max(initial_size, 16), init_value);
   }
   explicit BitmapTpl(const BitmapRaw<T> &raw) {
     static_assert(sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 ||
@@ -205,11 +211,11 @@ class BitmapTpl final {
 
   inline size_t WordBits() const { return BM_WORD_BITS; }
   inline void Set(uint32 index) {
-    if (unlikely(!raw_.HasEnoughSpace(index))) policy_(raw_, index);
+    if (unlikely(!raw_.HasEnoughSpace(index))) policy_(raw_, index, 0);
     raw_.Set(index);
   }
   inline void SetN(uint32 index) {
-    if (unlikely(!raw_.HasEnoughSpace(index))) policy_(raw_, index);
+    if (unlikely(!raw_.HasEnoughSpace(index))) policy_(raw_, index, 0);
     raw_.SetN(index);
   }
   inline void Clear(uint32 index) {
@@ -222,6 +228,7 @@ class BitmapTpl final {
       raw_.ClearAll();
   }
   inline void ClearAll() { raw_.ClearAll(); }
+  inline void SetAll() { raw_.SetAll(); }
   inline bool Test(uint32 index) const {
     if (likely(raw_.HasEnoughSpace(index))) return raw_.Test(index);
     return false;
@@ -253,18 +260,18 @@ class BitmapTpl final {
   const BitmapRaw<T> &Raw() const { return raw_; }
   BitmapRaw<T> &Raw() { return raw_; }
 
-  static void DefaultBitmapMemoryPolicy(BitmapRaw<T> &raw, uint32 index) {
+  static void DefaultBitmapMemoryPolicy(BitmapRaw<T> &raw, uint32 index, uint8 init_value = 0) {
     auto old_bitmap = raw.bitmap;
     auto old_size = raw.size;
     auto size = Max(BM_INDEX_WORD_OFF(index) + 1, old_size * 2);
     auto p = PAX_NEW_ARRAY<T>(size);
     if (old_size > 0) memcpy(p, old_bitmap, sizeof(T) * old_size);
-    memset(&p[old_size], 0, sizeof(T) * (size - old_size));
+    memset(&p[old_size], init_value, sizeof(T) * (size - old_size));
     raw.bitmap = p;
     raw.size = size;
     PAX_DELETE_ARRAY(old_bitmap);
   }
-  static void ReadOnlyRefBitmap(BitmapRaw<T> & /*raw*/, uint32 /*index*/) {
+  static void ReadOnlyRefBitmap(BitmapRaw<T> & /*raw*/, uint32 /*index*/, uint8 /*init_value*/) {
     // raise
     CBDB_RAISE(cbdb::CException::kExTypeInvalidMemoryOperation);
   }
