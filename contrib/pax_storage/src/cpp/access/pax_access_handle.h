@@ -176,6 +176,10 @@ class CCPaxAccessMethod final {
   static bool ScanAnalyzeNextTuple(TableScanDesc scan,
                                    TransactionId oldest_xmin, double *liverows,
                                    double *deadrows, TupleTableSlot *slot);
+  static int RelationAcquireSampleRows(Relation onerel, int elevel,
+                                       HeapTuple *rows, int targrows,
+                                       double *totalrows,
+                                       double *totaldeadrows);
   static bool ScanBitmapNextBlock(TableScanDesc scan, TBMIterateResult *tbmres);
   static bool ScanBitmapNextTuple(TableScanDesc scan, TBMIterateResult *tbmres,
                                   TupleTableSlot *slot);

@@ -91,6 +91,7 @@ class PaxScanDesc {
                             BufferAccessStrategy bstrategy);
   bool ScanAnalyzeNextTuple(TransactionId oldest_xmin, double *liverows,
                             double *deadrows, TupleTableSlot *slot);
+  bool GetTuple(TupleTableSlot *slot, int64 offset);
 
   bool ScanSampleNextBlock(SampleScanState *scanstate);
 

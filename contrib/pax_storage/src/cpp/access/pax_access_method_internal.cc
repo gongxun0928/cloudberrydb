@@ -25,30 +25,30 @@
  *-------------------------------------------------------------------------
  */
 
-#include "access/pax_access_handle.h"
-
 #include "comm/cbdb_api.h"
 
+#include "access/pax_access_handle.h"
 #include "access/pax_table_cluster.h"
 #include "catalog/pax_catalog.h"
 #include "comm/cbdb_wrappers.h"
 #include "comm/paxc_wrappers.h"
 #include "comm/singleton.h"
+#include "commands/vacuum.h"
 #include "exceptions/CException.h"
 #include "storage/wal/paxc_wal.h"
+#include "utils/sampling.h"
 
 #define RELATION_IS_PAX(rel) \
   (OidIsValid((rel)->rd_rel->relam) && RelationIsPAX(rel))
 
 namespace paxc {
 static void pax_disallow_dfs_tablespace(Oid reltablespace) {
-  if (!OidIsValid(reltablespace))
-    reltablespace = MyDatabaseTableSpace;
+  if (!OidIsValid(reltablespace)) reltablespace = MyDatabaseTableSpace;
 
   if (paxc::IsDfsTablespaceById(reltablespace))
     ereport(ERROR, (errmsg("pax unsupport dfs tablespace:%u", reltablespace)));
 }
-}
+}  // namespace paxc
 
 #ifdef USE_MANIFEST_API
 namespace pax {
@@ -102,14 +102,12 @@ void CCPaxAccessMethod::RelationCopyForCluster(
     elog(ERROR, "only btree index is supported for pax table clustering");
 
   CBDB_TRY();
-  {
-    pax::IndexCluster(old_rel, new_rel, old_index, GetActiveSnapshot());
-  }
+  { pax::IndexCluster(old_rel, new_rel, old_index, GetActiveSnapshot()); }
   CBDB_CATCH_DEFAULT();
   CBDB_END_TRY();
 }
 
-} // namespace pax
+}  // namespace pax
 
 namespace paxc {
 uint64 PaxAccessMethod::RelationSize(Relation rel, ForkNumber fork_number) {
@@ -180,7 +178,7 @@ void PaxAccessMethod::SwapRelationFiles(Oid relid1, Oid relid2,
                                         MultiXactId cutoff_multi) {
   manifest_swap_table(relid1, relid2, frozen_xid, cutoff_multi);
 }
-} // namespace paxc
+}  // namespace paxc
 #else
 
 #include "storage/file_system.h"
@@ -344,7 +342,7 @@ void CCPaxAccessMethod::RelationCopyForCluster(
   CBDB_END_TRY();
 }
 
-} // namespace pax
+}  // namespace pax
 
 namespace paxc {
 uint64 PaxAccessMethod::RelationSize(Relation rel, ForkNumber fork_number) {
@@ -451,7 +449,7 @@ void PaxAccessMethod::SwapRelationFiles(Oid relid1, Oid relid2,
   paxc::CPaxAuxSwapRelationFiles(relid1, relid2, frozen_xid, cutoff_multi);
 }
 
-} // namespace paxc
+}  // namespace paxc
 #endif
 
 // register object class to support delete by dependency
@@ -527,8 +525,7 @@ static void PaxFastSeqIdentityObject(struct CustomObjectClass * /*self*/,
                                      bool missing_ok,
                                      struct StringInfoData *buffer) {
   char *pax_fast_seq_name;
-  pax_fast_seq_name =
-      CPaxGetFastSequencesName(object->objectId, missing_ok);
+  pax_fast_seq_name = CPaxGetFastSequencesName(object->objectId, missing_ok);
   if (pax_fast_seq_name) {
     if (objname) *objname = list_make1(pax_fast_seq_name);
     appendStringInfo(buffer, "pax fast sequences identity %s: ",
@@ -601,17 +598,17 @@ static struct CustomObjectClass pax_tables_coc = {
     .object_type_desc = PaxTableTypeDesc,
     .object_identity_parts = PaxTableIdentityObject,
 };
-#endif // USE_PAX_CATALOG
+#endif  // USE_PAX_CATALOG
 
 void register_custom_object_classes() {
   register_custom_object_class(&pax_fastsequence_coc);
 #ifdef USE_PAX_CATALOG
   register_custom_object_class(&pax_tables_coc);
-#endif // USE_PAX_CATALOG
+#endif  // USE_PAX_CATALOG
 
 #if defined(USE_MANIFEST_API) && !defined(USE_PAX_CATALOG)
   manifest_init();
 #endif
 }
 
-} // namespace paxc
+}  // namespace paxc

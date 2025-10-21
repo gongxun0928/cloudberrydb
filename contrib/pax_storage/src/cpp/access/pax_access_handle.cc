@@ -314,6 +314,100 @@ bool CCPaxAccessMethod::ScanAnalyzeNextTuple(TableScanDesc scan,
   pg_unreachable();
 }
 
+int CCPaxAccessMethod::RelationAcquireSampleRows(Relation onerel, int elevel,
+                                                 HeapTuple *rows, int targrows,
+                                                 double *totalrows,
+                                                 double *totaldeadrows) {
+  int numrows = 0;
+  double liverows = 0;
+  double deadrows = 0;
+  Assert(targrows > 0);
+  Oid pax_aux_oid;
+  Relation pax_aux_rel;
+  TupleDesc aux_tup_desc;
+  HeapTuple aux_tup;
+  SysScanDesc aux_scan;
+  uint64 total_tuples = 0;
+
+  CBDB_TRY();
+  {
+    // Get the oid of pg_pax_blocks_xxx from pg_pax_tables
+    pax_aux_oid = cbdb::GetPaxAuxRelid(onerel->rd_id);
+
+    // Scan pg_pax_blocks_xxx to get tuple count
+    pax_aux_rel = cbdb::TableOpen(pax_aux_oid, AccessShareLock);
+    aux_tup_desc = RelationGetDescr(pax_aux_rel);
+
+    aux_scan =
+        cbdb::SystableBeginScan(pax_aux_rel, InvalidOid, false, NULL, 0, NULL);
+    while (HeapTupleIsValid(aux_tup = cbdb::SystableGetNext(aux_scan))) {
+      Datum pttupcount_datum;
+      bool isnull = false;
+
+      pttupcount_datum = cbdb::HeapGetAttr(
+          aux_tup, ANUM_PG_PAX_BLOCK_TABLES_PTTUPCOUNT, aux_tup_desc, &isnull);
+      Assert(!isnull);
+      total_tuples += DatumGetUInt32(pttupcount_datum);
+    }
+
+    cbdb::SystableEndScan(aux_scan);
+    cbdb::TableClose(pax_aux_rel, AccessShareLock);
+
+    *totalrows = 0.0;
+    *totaldeadrows = 0.0;
+
+    // Prepare for sampling tuple numbers
+    RowSamplerData rs;
+    cbdb::RowSamplerInit(&rs, total_tuples, targrows, random());
+
+    // Create scan and slot for sampling
+    TableScanDesc scan = cbdb::TableBeginScanAnalyze(onerel);
+    TupleTableSlot *slot = cbdb::TableSlotCreate(onerel, NULL);
+
+    int64 current_row = 0;
+    int64 target_row = 0;
+
+    auto desc = PaxScanDesc::ToDesc(scan);
+
+    while (cbdb::RowSamplerHasMore(&rs)) {
+      target_row = cbdb::RowSamplerNext(&rs);
+      cbdb::VacuumDelayPoint();
+      bool ok = desc->GetTuple(slot, target_row - current_row);
+      if (ok) {
+        rows[numrows++] = ExecCopySlotHeapTuple(slot);
+        liverows++;
+      } else {
+        deadrows++;
+      }
+
+      current_row = target_row;
+      cbdb::ExecClearTuple(slot);
+    }
+
+    cbdb::ExecDropSingleTupleTableSlot(slot);
+    cbdb::TableEndScan(scan);
+
+    *totalrows = floor((liverows / rs.m) * total_tuples + 0.5);
+    *totaldeadrows = total_tuples - *totalrows;
+
+    /*
+     * Emit some interesting relation info
+     */
+    ereport(elevel, (errmsg("\"%s\": scanned " INT64_FORMAT " rows, "
+                            "containing %.0f live rows and %.0f dead rows; "
+                            "%d rows in sample, %.0f accurate total live rows, "
+                            "%.0f accurate total dead rows",
+                            RelationGetRelationName(onerel), rs.m, liverows,
+                            deadrows, numrows, *totalrows, *totaldeadrows)));
+
+    return numrows;
+  }
+  CBDB_CATCH_DEFAULT();
+  CBDB_FINALLY({});
+  CBDB_END_TRY();
+  return 0;
+}
+
 bool CCPaxAccessMethod::ScanBitmapNextBlock(TableScanDesc scan,
                                             TBMIterateResult *tbmres) {
   CBDB_TRY();
@@ -774,6 +868,8 @@ static const TableAmRoutine kPaxColumnMethods = {
     .relation_vacuum = paxc::PaxAccessMethod::RelationVacuum,
     .scan_analyze_next_block = pax::CCPaxAccessMethod::ScanAnalyzeNextBlock,
     .scan_analyze_next_tuple = pax::CCPaxAccessMethod::ScanAnalyzeNextTuple,
+    .relation_acquire_sample_rows =
+        pax::CCPaxAccessMethod::RelationAcquireSampleRows,
     .index_build_range_scan = paxc::PaxAccessMethod::IndexBuildRangeScan,
     .index_validate_scan = paxc::PaxAccessMethod::IndexValidateScan,
 

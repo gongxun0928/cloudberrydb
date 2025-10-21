@@ -34,6 +34,7 @@
 #include "comm/guc.h"
 #include "comm/pax_memory.h"
 #include "comm/pax_resource.h"
+#include "storage/filter/pax_sparse_filter.h"
 #include "storage/local_file_system.h"
 #include "storage/micro_partition.h"
 #include "storage/micro_partition_iterator.h"
@@ -42,11 +43,9 @@
 #include "storage/pax.h"
 #include "storage/pax_buffer.h"
 #include "storage/pax_defined.h"
-#include "storage/filter/pax_sparse_filter.h"
 #ifdef VEC_BUILD
 #include "utils/am_vec.h"
 #endif
-
 
 namespace pax {
 
@@ -111,8 +110,7 @@ static inline bool CheckExists(Relation rel, ItemPointer tid, Snapshot snapshot,
 PaxIndexScanDesc::PaxIndexScanDesc(Relation rel) : base_{.rel = rel} {
   Assert(rel);
   Assert(&base_ == reinterpret_cast<IndexFetchTableData *>(this));
-  rel_path_ = cbdb::BuildPaxDirectoryPath(
-      rel->rd_node, rel->rd_backend);
+  rel_path_ = cbdb::BuildPaxDirectoryPath(rel->rd_node, rel->rd_backend);
 }
 
 PaxIndexScanDesc::~PaxIndexScanDesc() {}
@@ -326,9 +324,8 @@ void PaxScanDesc::EndScan() {
 }
 
 TableScanDesc PaxScanDesc::BeginScanExtractColumns(
-    Relation rel, Snapshot snapshot, int nkeys,
-    struct ScanKeyData *key, ParallelTableScanDesc parallel_scan,
-    struct PlanState *ps, uint32 flags) {
+    Relation rel, Snapshot snapshot, int nkeys, struct ScanKeyData *key,
+    ParallelTableScanDesc parallel_scan, struct PlanState *ps, uint32 flags) {
   std::shared_ptr<PaxFilter> filter;
   List *targetlist = ps->plan->targetlist;
   List *qual = ps->plan->qual;
@@ -424,7 +421,7 @@ bool PaxScanDesc::ScanAnalyzeNextTuple(TransactionId /*oldest_xmin*/,
   try {
     ExecClearTuple(slot);
     ok = reader_->GetTuple(slot, ForwardScanDirection,
-                           target_tuple_id_ - prev_target_tuple_id_);
+                            target_tuple_id_ - prev_target_tuple_id_);
     next_tuple_id_ = target_tuple_id_ + 1;
     prev_target_tuple_id_ = target_tuple_id_;
     if (ok) {
@@ -441,6 +438,19 @@ bool PaxScanDesc::ScanAnalyzeNextTuple(TransactionId /*oldest_xmin*/,
     CBDB_RERAISE(e);
   }
 
+  MemoryContextSwitchTo(old_ctx);
+  return ok;
+}
+
+bool PaxScanDesc::GetTuple(TupleTableSlot *slot, int64 offset) {
+  MemoryContext old_ctx;
+  bool ok = false;
+  ExecClearTuple(slot);
+  old_ctx = MemoryContextSwitchTo(memory_context_);
+  ok = reader_->GetTuple(slot, ForwardScanDirection, offset);
+  if (ok) {
+    ExecStoreVirtualTuple(slot);
+  }
   MemoryContextSwitchTo(old_ctx);
   return ok;
 }

@@ -162,7 +162,8 @@ static inline float8 DatumToFloat8(Datum d) noexcept {
   return DatumGetFloat8(d);
 }
 
-static pg_attribute_always_inline Oid RelationGetRelationId(Relation rel) noexcept {
+static pg_attribute_always_inline Oid
+RelationGetRelationId(Relation rel) noexcept {
   return RelationGetRelid(rel);
 }
 
@@ -292,6 +293,16 @@ void ExecClearTuple(TupleTableSlot *slot);
 
 void ExecStoreVirtualTuple(TupleTableSlot *slot);
 
+TableScanDesc TableBeginScanAnalyze(Relation rel);
+TupleTableSlot *TableSlotCreate(Relation rel, List **reglist);
+void TableEndScan(TableScanDesc scan);
+
+void RowSamplerInit(RowSampler rs, int64 nobjects, int64 samplesize,
+                    long randseed);
+bool RowSamplerHasMore(RowSampler rs);
+int64 RowSamplerNext(RowSampler rs);
+
+void VacuumDelayPoint(void);
 }  // namespace cbdb
 
 // clang-format off

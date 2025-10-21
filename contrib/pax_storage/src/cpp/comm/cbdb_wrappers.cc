@@ -300,8 +300,7 @@ std::string cbdb::BuildPaxDirectoryPath(RelFileNode rd_node,
                                         BackendId rd_backend) {
   CBDB_WRAP_START;
   {
-    char *tmp_str =
-        paxc::BuildPaxDirectoryPath(rd_node, rd_backend);
+    char *tmp_str = paxc::BuildPaxDirectoryPath(rd_node, rd_backend);
     std::string ret_str(tmp_str);
     pfree(tmp_str);
     return ret_str;
@@ -626,5 +625,48 @@ void cbdb::ExecClearTuple(TupleTableSlot *slot) {
 void cbdb::ExecStoreVirtualTuple(TupleTableSlot *slot) {
   CBDB_WRAP_START;
   { ::ExecStoreVirtualTuple(slot); }
+  CBDB_WRAP_END;
+}
+
+TableScanDesc cbdb::TableBeginScanAnalyze(Relation rel) {
+  CBDB_WRAP_START;
+  { return table_beginscan_analyze(rel); }
+  CBDB_WRAP_END;
+}
+
+TupleTableSlot *cbdb::TableSlotCreate(Relation rel, List **reglist) {
+  CBDB_WRAP_START;
+  { return table_slot_create(rel, reglist); }
+  CBDB_WRAP_END;
+}
+
+void cbdb::TableEndScan(TableScanDesc scan) {
+  CBDB_WRAP_START;
+  { return table_endscan(scan); }
+  CBDB_WRAP_END;
+}
+
+void cbdb::RowSamplerInit(RowSampler rs, int64 nobjects, int64 samplesize,
+                          long randseed) {
+  CBDB_WRAP_START;
+  { RowSampler_Init(rs, nobjects, samplesize, randseed); }
+  CBDB_WRAP_END;
+}
+
+bool cbdb::RowSamplerHasMore(RowSampler rs) {
+  CBDB_WRAP_START;
+  { return RowSampler_HasMore(rs); }
+  CBDB_WRAP_END;
+}
+
+int64 cbdb::RowSamplerNext(RowSampler rs) {
+  CBDB_WRAP_START;
+  { return RowSampler_Next(rs); }
+  CBDB_WRAP_END;
+}
+
+void cbdb::VacuumDelayPoint(void) {
+  CBDB_WRAP_START;
+  { return vacuum_delay_point(); }
   CBDB_WRAP_END;
 }
