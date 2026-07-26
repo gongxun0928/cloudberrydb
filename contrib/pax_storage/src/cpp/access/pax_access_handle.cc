@@ -42,6 +42,9 @@
 #include "comm/paxc_wrappers.h"
 #include "comm/vec_numeric.h"
 #include "exceptions/CException.h"
+extern "C" {
+#include "postmaster/autovacuum.h"
+}
 #include "storage/local_file_system.h"
 #ifdef VEC_BUILD
 #include "storage/vec_parallel_pax.h"
@@ -534,10 +537,22 @@ TransactionId PaxAccessMethod::IndexDeleteTuples(
   return 0;
 }
 
-void PaxAccessMethod::RelationVacuum(Relation /*onerel*/,
+void PaxAccessMethod::RelationVacuum(Relation onerel,
                                      VacuumParams * /*params*/,
                                      BufferAccessStrategy /*bstrategy*/) {
-  /* PAX: micro-partitions have no dead tuples, so vacuum is empty */
+  /*
+   * PAX deletions are recorded in per-micro-partition visibility maps.
+   * Lazy VACUUM cannot compact the immutable micro-partition files or their
+   * indexes safely; VACUUM FULL performs the required table rewrite.
+   *
+   * Report this limitation for user-issued VACUUM commands, but avoid
+   * flooding logs from segment and autovacuum workers.
+   */
+  if (IS_QD_OR_SINGLENODE() && !IsAutoVacuumWorkerProcess())
+    ereport(WARNING,
+            (errmsg("VACUUM does not reclaim space from PAX table \"%s\"",
+                    RelationGetRelationName(onerel)),
+             errhint("Use VACUUM FULL to rewrite the table and reclaim space.")));
 }
 
 BlockSequence *PaxAccessMethod::RelationGetBlockSequences(Relation rel,

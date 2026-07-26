@@ -34,21 +34,16 @@ VACUUM
 SELECT relname, reltuples FROM pg_class WHERE relname = 'foo';
  relname | reltuples 
 ---------+-----------
- foo     | 0         
+ foo     | 85        
 (1 row)
 SELECT relname, reltuples FROM pg_class WHERE relname = 'foo_index';
  relname   | reltuples 
 -----------+-----------
  foo_index | -1        
 (1 row)
--- in case there's autovacuum worker running in the backend, the aoseg will not be dropped which has state = 2
-SELECT ptblockname, pttupcount FROM get_pax_aux_table_all('foo') where pttupcount > 0;
- ptblockname | pttupcount 
--------------+------------
- 1           | 11         
- 0           | 14         
- 1           | 20         
- 0           | 18         
- 1           | 19         
- 0           | 18         
-(6 rows)
+-- The rewritten PAX auxiliary entries contain only live rows.
+SELECT sum(pttupcount) AS pttupcount FROM get_pax_aux_table_all('foo') WHERE pttupcount > 0;
+ pttupcount 
+------------
+ 85         
+(1 row)

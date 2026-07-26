@@ -55,13 +55,14 @@ class CPaxDmlStateLocal final {
 
   void InitDmlState(Relation rel, CmdType operation);
   void FinishDmlState(Relation rel, CmdType operation);
+  void AbortDmlState(Relation rel) noexcept;
 
   bool IsInitialized() const { return cbdb::pax_memory_context != nullptr; }
   CPaxInserter *GetInserter(Relation rel);
   CPaxDeleter *GetDeleter(Relation rel, Snapshot snapshot,
                           bool missing_null = false);
 
-  void Reset();
+  void Reset() noexcept;
 
   CPaxDmlStateLocal(const CPaxDmlStateLocal &) = delete;
   CPaxDmlStateLocal &operator=(const CPaxDmlStateLocal &) = delete;

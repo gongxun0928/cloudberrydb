@@ -104,7 +104,7 @@ test: fsync_ao
 test: disable_autovacuum
 
 # Tests on PAX tables (row-oriented).
-# FIXME: PAX won't update the reltuples in pg_class after vacuum/vacuum full
+# FIXME: PAX won't update the reltuples in pg_class after lazy VACUUM
 test: concurrent_index_creation_should_not_deadlock
 test: pax/alter_while_vacuum2
 test: pax/alter_while_vacuum
@@ -112,6 +112,7 @@ test: pax/bitmapindex_rescan
 test: pax/compaction_full_stats
 test: pax/compaction_utility_insert
 test: pax/compaction_utility
+test: pax/vacuum_full_reclaims_space
 test: pax/cursor_before_delete
 test: pax/cursor_before_deletevacuum
 test: pax/cursor_before_update

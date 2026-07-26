@@ -1,0 +1,134 @@
+-- Regression coverage for https://github.com/apache/cloudberry/issues/1766.
+--
+-- PAX stores deletes in visibility maps.  Lazy VACUUM cannot compact the
+-- immutable micro-partitions, while VACUUM FULL must rewrite only live rows.
+
+CREATE EXTENSION IF NOT EXISTS gp_inject_fault;
+CREATE
+
+DROP TABLE IF EXISTS pax_vacuum_full_repro;
+DROP
+
+CREATE TABLE pax_vacuum_full_repro ( id int, payload text ) USING PAX DISTRIBUTED BY (id);
+CREATE
+
+CREATE UNIQUE INDEX pax_vacuum_full_repro_id_idx ON pax_vacuum_full_repro(id);
+CREATE
+
+INSERT INTO pax_vacuum_full_repro SELECT g, repeat(md5(g::text), 20) FROM generate_series(1, 100000) AS g;
+INSERT 100000
+
+CREATE TEMP TABLE pax_vacuum_full_size_before ( bytes bigint ) USING heap DISTRIBUTED RANDOMLY;
+CREATE
+
+INSERT INTO pax_vacuum_full_size_before SELECT pg_total_relation_size('pax_vacuum_full_repro');
+INSERT 1
+
+DELETE FROM pax_vacuum_full_repro WHERE id <= 90000;
+DELETE 90000
+
+-- Lazy VACUUM cannot compact immutable micro-partitions and leaves the
+-- physical size unchanged.
+VACUUM pax_vacuum_full_repro;
+VACUUM
+
+SELECT pg_total_relation_size('pax_vacuum_full_repro') = (SELECT bytes FROM pax_vacuum_full_size_before) AS lazy_size_unchanged;
+ lazy_size_unchanged 
+---------------------
+ t                   
+(1 row)
+
+-- An aborted rewrite must discard its unfinished PAX DML state.  The next
+-- VACUUM FULL in the same test session must be able to rewrite the table.
+GP_IGNORE:-- start_ignore
+GP_IGNORE:SELECT gp_inject_fault('orc_writer_write_tuple', 'error', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content >= 0;
+GP_IGNORE: gp_inject_fault 
+GP_IGNORE:-----------------
+GP_IGNORE: Success:        
+GP_IGNORE:(1 row)
+GP_IGNORE:-- end_ignore
+
+VACUUM FULL pax_vacuum_full_repro;
+ERROR:  fault triggered, fault name:'orc_writer_write_tuple' fault type:'error'
+
+GP_IGNORE:-- start_ignore
+GP_IGNORE:SELECT gp_inject_fault('orc_writer_write_tuple', 'reset', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content >= 0;
+GP_IGNORE: gp_inject_fault 
+GP_IGNORE:-----------------
+GP_IGNORE: Success:        
+GP_IGNORE:(1 row)
+GP_IGNORE:-- end_ignore
+
+VACUUM FULL pax_vacuum_full_repro;
+VACUUM
+
+-- The rewrite keeps exactly the visible rows and reclaims the deleted rows'
+-- storage.
+SELECT count(*) AS live_rows, min(id) AS min_id, max(id) AS max_id FROM pax_vacuum_full_repro;
+ live_rows | min_id | max_id 
+-----------+--------+--------
+ 10000     | 90001  | 100000 
+(1 row)
+
+SELECT pg_total_relation_size('pax_vacuum_full_repro') < (SELECT bytes FROM pax_vacuum_full_size_before) AS full_size_reduced;
+ full_size_reduced 
+-------------------
+ t                 
+(1 row)
+
+-- relation_copy_for_cluster reports the copied tuple count on each segment.
+SELECT sum(reltuples)::int AS segment_reltuples FROM gp_dist_random('pg_class') WHERE relname = 'pax_vacuum_full_repro';
+ segment_reltuples 
+-------------------
+ 10000             
+(1 row)
+
+-- VACUUM FULL rebuilds indexes after swapping in the rewritten relation.
+SELECT indisvalid, indisready FROM pg_index WHERE indexrelid = 'pax_vacuum_full_repro_id_idx'::regclass;
+ indisvalid | indisready 
+------------+------------
+ t          | t          
+(1 row)
+
+SET optimizer = off;
+SET
+SET enable_seqscan = off;
+SET
+
+SELECT id, length(payload) AS payload_length FROM pax_vacuum_full_repro WHERE id = 95000;
+ id    | payload_length 
+-------+----------------
+ 95000 | 640            
+(1 row)
+
+RESET enable_seqscan;
+RESET
+RESET optimizer;
+RESET
+
+DROP TABLE pax_vacuum_full_repro;
+DROP
+
+-- Rewriting must also preserve values stored in PAX external-toast files.
+CREATE TABLE pax_vacuum_full_toast ( id int, payload text ) USING PAX DISTRIBUTED BY (id);
+CREATE
+
+ALTER TABLE pax_vacuum_full_toast ALTER COLUMN payload SET STORAGE EXTERNAL;
+ALTER
+
+INSERT INTO pax_vacuum_full_toast SELECT g, repeat(md5(g::text), 350000) FROM generate_series(1, 3) AS g;
+INSERT 3
+
+DELETE FROM pax_vacuum_full_toast WHERE id < 3;
+DELETE 2
+VACUUM FULL pax_vacuum_full_toast;
+VACUUM
+
+SELECT count(*) AS live_rows, min(id) AS min_id, max(id) AS max_id, min(length(payload)) AS min_payload_length, max(length(payload)) AS max_payload_length FROM pax_vacuum_full_toast;
+ live_rows | min_id | max_id | min_payload_length | max_payload_length 
+-----------+--------+--------+--------------------+--------------------
+ 1         | 3      | 3      | 11200000           | 11200000           
+(1 row)
+
+DROP TABLE pax_vacuum_full_toast;
+DROP

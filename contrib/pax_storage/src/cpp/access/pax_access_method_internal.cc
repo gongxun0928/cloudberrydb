@@ -29,6 +29,7 @@
 
 #include "comm/cbdb_api.h"
 
+#include "access/pax_dml_state.h"
 #include "access/pax_table_cluster.h"
 #include "catalog/pax_catalog.h"
 #include "comm/cbdb_wrappers.h"
@@ -39,6 +40,25 @@
 
 #define RELATION_IS_PAX(rel) \
   (OidIsValid((rel)->rd_rel->relam) && RelationIsPAX(rel))
+
+namespace pax {
+static double RewriteLiveTuples(Relation old_rel, Relation new_rel) {
+  bool dml_initialized = false;
+
+  try {
+    CCPaxAccessMethod::ExtDmlInit(new_rel, CMD_INSERT);
+    dml_initialized = true;
+    double num_tuples = paxc::CPaxCopyAllTuples(old_rel, new_rel, nullptr);
+    CCPaxAccessMethod::ExtDmlFini(new_rel, CMD_INSERT);
+    dml_initialized = false;
+    return num_tuples;
+  } catch (...) {
+    if (dml_initialized)
+      CPaxDmlStateLocal::Instance()->AbortDmlState(new_rel);
+    throw;
+  }
+}
+}  // namespace pax
 
 namespace paxc {
 static void pax_disallow_dfs_tablespace(Oid reltablespace) {
@@ -86,14 +106,14 @@ void CCPaxAccessMethod::RelationCopyData(Relation rel,
 void CCPaxAccessMethod::RelationCopyForCluster(
     Relation old_rel, Relation new_rel, Relation old_index, bool use_sort,
     TransactionId /*oldest_xmin*/, TransactionId * /*xid_cutoff*/,
-    MultiXactId * /*multi_cutoff*/, double * /*num_tuples*/,
-    double * /*tups_vacuumed*/, double * /* tups_recently_dead*/) {
+    MultiXactId * /*multi_cutoff*/, double *num_tuples,
+    double *tups_vacuumed, double *tups_recently_dead) {
   Assert(RelationIsPAX(old_rel));
   Assert(RelationIsPAX(new_rel));
   if (!use_sort && old_index == nullptr) {
-    pax::CCPaxAccessMethod::ExtDmlInit(new_rel, CMD_INSERT);
-    paxc::CPaxCopyAllTuples(old_rel, new_rel, nullptr);
-    pax::CCPaxAccessMethod::ExtDmlFini(new_rel, CMD_INSERT);
+    *num_tuples = RewriteLiveTuples(old_rel, new_rel);
+    *tups_vacuumed = 0;
+    *tups_recently_dead = 0;
     return;
   }
 
@@ -318,15 +338,18 @@ void CCPaxAccessMethod::RelationCopyData(Relation rel,
 void CCPaxAccessMethod::RelationCopyForCluster(
     Relation old_rel, Relation new_rel, Relation old_index, bool use_sort,
     TransactionId /*oldest_xmin*/, TransactionId * /*xid_cutoff*/,
-    MultiXactId * /*multi_cutoff*/, double * /*num_tuples*/,
-    double * /*tups_vacuumed*/, double * /* tups_recently_dead*/) {
+    MultiXactId * /*multi_cutoff*/, double *num_tuples,
+    double *tups_vacuumed, double *tups_recently_dead) {
   Assert(RELATION_IS_PAX(old_rel));
   Assert(RELATION_IS_PAX(new_rel));
   CBDB_TRY();
   {
-    //  if false and OldIndex is InvalidOid, no sorting is performed, just copy
+    // VACUUM FULL must rewrite live tuples instead of copying micro-partition
+    // files, which also contain rows hidden by PAX visibility maps.
     if (!use_sort && old_index == NULL) {
-      pax::CCPaxAuxTable::PaxAuxRelationCopyDataForCluster(old_rel, new_rel);
+      *num_tuples = RewriteLiveTuples(old_rel, new_rel);
+      *tups_vacuumed = 0;
+      *tups_recently_dead = 0;
       return;
     }
 

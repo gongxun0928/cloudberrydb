@@ -103,6 +103,6 @@ void CPaxAuxSwapRelationFiles(Oid relid1, Oid relid2,
                               MultiXactId cutoff_multi);
 #endif
 
-void CPaxCopyAllTuples(Relation old_rel, Relation new_rel, Snapshot snapshot);
+double CPaxCopyAllTuples(Relation old_rel, Relation new_rel, Snapshot snapshot);
 
 } // namespace paxc

@@ -16,5 +16,7 @@ DELETE FROM foo WHERE a < 16;
 VACUUM FULL foo;
 SELECT relname, reltuples FROM pg_class WHERE relname = 'foo';
 SELECT relname, reltuples FROM pg_class WHERE relname = 'foo_index';
--- in case there's autovacuum worker running in the backend, the aoseg will not be dropped which has state = 2
-SELECT ptblockname, pttupcount FROM get_pax_aux_table_all('foo') where pttupcount > 0;
+-- The rewritten PAX auxiliary entries contain only live rows.
+SELECT sum(pttupcount) AS pttupcount
+FROM get_pax_aux_table_all('foo')
+WHERE pttupcount > 0;

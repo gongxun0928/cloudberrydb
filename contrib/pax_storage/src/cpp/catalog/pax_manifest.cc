@@ -48,7 +48,10 @@ static inline bool TestVisimap(Relation rel, const char *visimap_name,
   CBDB_END_TRY();
   pg_unreachable();
 }
-void CPaxCopyAllTuples(Relation old_rel, Relation new_rel, Snapshot snapshot) {
+double CPaxCopyAllTuples(Relation old_rel, Relation new_rel,
+                         Snapshot snapshot) {
+  double num_tuples = 0;
+
   Assert(RelationIsPAX(old_rel));
   Assert(RelationIsPAX(new_rel));
 #ifdef USE_ASSERT_CHECKING
@@ -80,10 +83,12 @@ void CPaxCopyAllTuples(Relation old_rel, Relation new_rel, Snapshot snapshot) {
   CommandId mycid = GetCurrentCommandId(true);
   while (table_scan_getnextslot(scan, ForwardScanDirection, slot)) {
     table_tuple_insert(new_rel, slot, mycid, 0, nullptr);
+    num_tuples++;
     CHECK_FOR_INTERRUPTS();
   }
   table_endscan(scan);
   ExecDropSingleTupleTableSlot(slot);
+  return num_tuples;
 }
 } // namespace paxc
 

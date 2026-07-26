@@ -82,6 +82,13 @@ void CPaxDmlStateLocal::FinishDmlState(Relation rel, CmdType /*operation*/) {
   }
 }
 
+void CPaxDmlStateLocal::AbortDmlState(Relation rel) noexcept {
+  // Do not call FinishInsert()/ExecDelete() here.  On an error the current
+  // transaction will discard the catalog changes, and resource-owner cleanup
+  // closes any files still owned by an unfinished writer.
+  RemoveDmlState(cbdb::RelationGetRelationId(rel));
+}
+
 CPaxInserter *CPaxDmlStateLocal::GetInserter(Relation rel) {
   auto state = FindDmlState(cbdb::RelationGetRelationId(rel));
   if (state->inserter == nullptr) {
@@ -99,7 +106,15 @@ CPaxDeleter *CPaxDmlStateLocal::GetDeleter(Relation rel, Snapshot snapshot,
   return state->deleter.get();
 }
 
-void CPaxDmlStateLocal::Reset() { cbdb::pax_memory_context = nullptr; }
+void CPaxDmlStateLocal::Reset() noexcept {
+  // The reset callback is also the cleanup path for PostgreSQL ERRORs, whose
+  // longjmp bypasses C++ exception handlers.  Never retain descriptors whose
+  // objects and buffers belonged to the memory context being reset.
+  dml_descriptor_tab_.clear();
+  last_state_.reset();
+  last_oid_ = InvalidOid;
+  cbdb::pax_memory_context = nullptr;
+}
 
 CPaxDmlStateLocal::CPaxDmlStateLocal()
     : last_oid_(InvalidOid), cb_{.func = DmlStateResetCallback, .arg = NULL} {}
